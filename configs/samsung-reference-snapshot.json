@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "source": "USER_PROVIDED_REFERENCE",
+  "observed_at": null,
+  "mode": null,
+  "team": "Samsung Lions",
+  "team_ovr": 86.6,
+  "set_deck_points": 121,
+  "position_training": {
+    "total_level": 99,
+    "displayed_team_ovr_contribution": 0.7
+  },
+  "players": {
+    "ranking_starting_pitchers": ["후라도'26", "김상진B", "권영호", "최원태'26", "백정현'21"],
+    "batters": ["김영웅", "박석민", "최형우'14", "김성윤'25", "동봉철'92", "박진만'07", "이승엽'00", "이만수'83", "양준혁'98", "구자욱'21", "신동주'97"],
+    "relief_pitchers": ["정현욱'08", "권혁'07", "이승민'26", "노장진", "김태훈S", "우규민"]
+  },
+  "limitations": [
+    "Reference data transcribed from the user's prior description; original screenshots are unavailable in this checkout.",
+    "No player ratings, card identities, mode attribution, OCR observations, or observation timestamp are inferred.",
+    "Values from different game modes are not treated as one verified measurement."
+  ]
+}

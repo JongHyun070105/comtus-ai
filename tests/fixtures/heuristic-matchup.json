@@ -1,0 +1,27 @@
+{
+  "source_type": "SYNTHETIC_TEST",
+  "mode": "RANKING_CHALLENGE",
+  "game_version": null,
+  "rules_version": "synthetic-only",
+  "pitchers": [
+    {"card_id": "pitcher-card-1", "display_name": "Test Starter A"},
+    {"card_id": "pitcher-card-2", "display_name": "Test Starter B"},
+    {"card_id": "pitcher-card-3", "display_name": "Test Starter C"},
+    {"card_id": "pitcher-card-4", "display_name": "Test Starter D"},
+    {"card_id": "pitcher-card-5", "display_name": "Test Starter E"}
+  ],
+  "opponents": [
+    {"opponent_id": "opponent-1", "display_name": "Test Opponent 1"},
+    {"opponent_id": "opponent-2", "display_name": "Test Opponent 2"},
+    {"opponent_id": "opponent-3", "display_name": "Test Opponent 3"},
+    {"opponent_id": "opponent-4", "display_name": "Test Opponent 4"},
+    {"opponent_id": "opponent-5", "display_name": "Test Opponent 5"}
+  ],
+  "scores": {
+    "pitcher-card-1": {"opponent-1": 20, "opponent-2": 0, "opponent-3": 0, "opponent-4": 0, "opponent-5": 0},
+    "pitcher-card-2": {"opponent-1": 0, "opponent-2": 19, "opponent-3": 0, "opponent-4": 0, "opponent-5": 0},
+    "pitcher-card-3": {"opponent-1": 0, "opponent-2": 0, "opponent-3": 18, "opponent-4": 0, "opponent-5": 0},
+    "pitcher-card-4": {"opponent-1": 0, "opponent-2": 0, "opponent-3": 0, "opponent-4": 17, "opponent-5": 0},
+    "pitcher-card-5": {"opponent-1": 0, "opponent-2": 0, "opponent-3": 0, "opponent-4": 0, "opponent-5": 16}
+  }
+}

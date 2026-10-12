@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://comtus-ai.local/schemas/v1/matchup-input.schema.json",
+  "title": "Explicit heuristic matchup input v1",
+  "type": "object",
+  "required": ["pitchers", "opponents"],
+  "properties": {
+    "source_type": {"enum": ["SCREEN_CAPTURE_VERIFIED", "USER_PROVIDED_REFERENCE", "MANUAL_TRANSCRIPTION", "COMMUNITY_RESEARCH", "OFFICIAL_RULE", "SYNTHETIC_TEST", "UNKNOWN"], "default": "UNKNOWN"},
+    "mode": {"enum": ["LEAGUE", "RANKING_CHALLENGE", "REALTIME_MATCH", "SPECIAL_MATCH", "CLUB_BATTLE", "UNKNOWN"]},
+    "game_version": {"type": ["string", "null"]},
+    "rules_version": {"type": ["string", "null"]},
+    "pitchers": {"type": "array", "minItems": 5, "maxItems": 5, "items": {"$ref": "#/$defs/pitcher"}},
+    "opponents": {"type": "array", "minItems": 5, "maxItems": 5, "items": {"$ref": "#/$defs/opponent"}},
+    "baseline": {"type": "array", "minItems": 5, "maxItems": 5, "items": {"type": "string"}},
+    "scores": {"type": "object", "description": "Caller-provided uncalibrated score matrix; omit or use null for unknown pairings."}
+  },
+  "$defs": {
+    "pitcher": {"type": "object", "required": ["card_id", "display_name"], "properties": {"card_id": {"type": "string"}, "display_name": {"type": "string"}}},
+    "opponent": {"type": "object", "required": ["opponent_id", "display_name"], "properties": {"opponent_id": {"type": "string"}, "display_name": {"type": "string"}}}
+  }
+}

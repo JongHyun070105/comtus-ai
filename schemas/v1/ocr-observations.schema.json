@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://comtus-ai.local/schemas/v1/ocr-observations.schema.json",
+  "title": "Comtus AI OCR observations v1",
+  "type": "object",
+  "required": ["schema_version", "source", "screen_state", "frame_size", "observations"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "source": {"enum": ["vision", "SCREEN_CAPTURE_VERIFIED", "SYNTHETIC_TEST"]},
+    "screen_state": {"enum": ["HOME", "RANKING_LOBBY", "PITCHER_ORDER", "OPPONENT_LINEUP", "PLAYER_DETAIL_BATTER", "PLAYER_DETAIL_PITCHER", "TEAM_ROSTER", "SYNERGY", "POSITION_TRAINING", "MATCH_RESULT", "UNKNOWN"]},
+    "frame_size": {"type": "array", "prefixItems": [{"type": "integer", "minimum": 1}, {"type": "integer", "minimum": 1}], "minItems": 2, "maxItems": 2},
+    "active_panel": {"$ref": "#/$defs/region"},
+    "observations": {"type": "array", "items": {"$ref": "#/$defs/observation"}}
+  },
+  "$defs": {
+    "region": {"type": "array", "prefixItems": [{"type": "number", "minimum": 0, "maximum": 1}, {"type": "number", "minimum": 0, "maximum": 1}, {"type": "number", "minimum": 0, "maximum": 1}, {"type": "number", "minimum": 0, "maximum": 1}], "minItems": 4, "maxItems": 4},
+    "observation": {"type": "object", "required": ["schema_version", "text", "confidence", "bbox", "source"], "properties": {"schema_version": {"const": 1}, "text": {"type": "string"}, "field": {"type": ["string", "null"]}, "confidence": {"type": ["number", "null"], "minimum": 0, "maximum": 1}, "bbox": {"$ref": "#/$defs/region"}, "source": {"enum": ["vision", "SCREEN_CAPTURE_VERIFIED", "SYNTHETIC_TEST"]}}}
+  }
+}
