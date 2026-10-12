@@ -34,8 +34,8 @@ Updated: 2026-10-13
 - Korean OCR accuracy, actual active-panel bounds, and game screen-state profiles: require local game screenshots.
 - Current empirical/official values for skills, potentials, training, synergy, mode modifiers, opponent ratings, and win/score formulas: not established by available evidence.
 - Actual match results, trained/calibrated win model, real win rate, and capture/ML hardware benchmarks: no qualifying data or live frames.
-- Remote feature branch push: not yet checked after the implementation checkpoint.
+- Initial implementation checkpoint `81b4320f5df08d7a95124eb87f3545950738dfbd` was pushed to `origin/feat/ranking-ai-foundation`; the remote ref was read back and matched. A follow-up documentation checkpoint records this verification.
 
 ## Checkpoint
 
-Implementation and local verification are ready for a feature-branch checkpoint. Continue with the steps in [handoff](../handoff/NEXT_STEPS.md); do not mark live capture or probability-model verification complete based on synthetic tests.
+The feature branch contains a verified remote implementation checkpoint. The working branch and any follow-up documentation checkpoint are reported in the final Git status; do not mark live capture or probability-model verification complete based on synthetic tests.

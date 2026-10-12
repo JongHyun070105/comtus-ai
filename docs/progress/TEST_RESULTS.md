@@ -17,6 +17,7 @@ Updated: 2026-10-13. `EXEC PASS` denotes an executed command; compiled-but-not-e
 - Optimized binary `windows` command returned exit 3 with `SKIP / SCREEN_RECORDING_PERMISSION_DENIED`, as expected; it did not prompt for consent.
 - Direct synthetic Swift smoke harness linked to the optimized binary passed: OCR recognized `TEST 123`, emitted one bounded-confidence Vision observation, active-panel ROI/navigation assertions passed, and p50/p95/p99 plus missed-frame statistics were calculated. This is synthetic UI evidence, not a game-screen test or device-performance benchmark.
 - `git diff --check` passed before the final documentation update; it will be repeated before checkpointing.
+- Git checkpoint `81b4320f5df08d7a95124eb87f3545950738dfbd` was pushed normally to `origin/feat/ranking-ai-foundation`; a fresh `git ls-remote` read returned the same commit ID.
 
 ## EXEC FAIL
 
