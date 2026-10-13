@@ -103,11 +103,14 @@ comtus-ai capture list
 comtus-ai capture once --window-id 123 --output data/captures/frame.png
 comtus-ai capture ocr data/captures/frame.png --screen-state UNKNOWN
 comtus-ai capture ocr data/captures/frame.png --screen-state PLAYER_DETAIL_BATTER --active-panel 0.2 0.1 0.6 0.8
+comtus-ai capture ocr data/captures/frame.png --screen-state UNKNOWN --store --evidence-source SCREEN_CAPTURE_VERIFIED
 ```
 
-캡처는 ScreenCaptureKit만 사용합니다. 권한을 자동으로 요청하거나 우회하지 않습니다. `doctor`와 캡처 명령은 시스템 설정의 사전 권한 상태를 확인하고 권한이 없으면 `SKIP`으로 끝납니다. 사용자가 직접 시스템 설정에서 터미널/앱의 **화면 및 시스템 오디오 녹음(Screen & System Audio Recording)** 권한을 켜고 앱을 재실행해야 합니다.
+캡처는 ScreenCaptureKit만 사용합니다. 권한을 자동으로 요청하거나 우회하지 않습니다. `doctor`, `capture list`, `capture once`는 시스템 설정의 사전 권한 상태를 확인하고 권한이 없으면 `SKIP`으로 끝납니다. `capture ocr`는 로컬 이미지에 Vision을 실행하므로 Screen Recording 권한이 필요하지 않습니다.
 
-상세 화면 가장자리에는 이웃 페이지가 보일 수 있습니다. 상세 화면 OCR 전에 실제 화면에 맞는 `--active-panel x y width height`를 전달하십시오. 값은 프레임 기준 정규화 좌표이며 원점은 좌측 아래입니다. 검증된 ROI가 없으면 화면 분류는 `UNKNOWN`으로 남기고 인식 결과를 수동 검토해야 합니다. `frame_size`, 관측 텍스트, 신뢰도, 프레임 기준 bbox, 스키마 버전이 JSON으로 출력됩니다. 원본 이미지는 기본적으로 Git에 추가하지 않습니다.
+`--store`는 이미지 SHA-256과 파싱된 OCR 관측을 SQLite에 추가하고 같은 입력의 재실행을 중복 제거합니다. 저장 출처는 기본 `UNKNOWN`입니다. `SCREEN_CAPTURE_VERIFIED`는 이 CLI의 ScreenCaptureKit 캡처로 생성한 이미지에만 지정하십시오. `--database`로 통합 테스트용 별도 DB를 지정할 수 있습니다. Swift 실행 파일은 최신 Release 산출물을 탐색하며, 다른 빌드 위치를 써야 하면 `COMTUS_AI_SWIFT_BIN=/path/to/mac-capture`로 지정할 수 있습니다.
+
+상세 화면 가장자리에는 이웃 페이지가 보일 수 있습니다. 상세 화면 OCR 전에 실제 화면에 맞는 `--active-panel x y width height`를 전달하십시오. 값은 프레임 기준 정규화 좌표이며 원점은 좌측 아래입니다. 현재 자동 분류기는 실제 캡처에서 확인한 상단 `랭킹 챌린지` 제목 앵커만 `RANKING_LOBBY`로 인식합니다. `--screen-state`로 요청한 값도 OCR 근거와 일치하지 않으면 `UNKNOWN`으로 낮춥니다. 라인업 상세와 선수 상세 프로필은 검증된 실제 표본이 없어 `UNKNOWN`으로 남습니다. `frame_size`, 관측 텍스트, 신뢰도, 프레임 기준 bbox, 스키마 버전이 JSON으로 출력됩니다. 원본 이미지는 기본적으로 Git에 추가하지 않습니다.
 
 ## 데이터와 검증 상태
 

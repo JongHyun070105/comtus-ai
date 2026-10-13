@@ -13,6 +13,11 @@ class ObservationAndLearningTests(unittest.TestCase):
         parsed = load_ocr_document(json.dumps(document))
         self.assertEqual(parsed[0].text, "후라도'26")
         self.assertEqual(parsed[0].source, EvidenceSource.SYNTHETIC_TEST)
+        swift_document = {"schema_version": 1, "source": "vision", "observations": [
+            {"schema_version": 1, "text": "TEST 123", "confidence": 1.0,
+             "bbox": [0.1, 0.2, 0.3, 0.1], "source": "vision"},
+        ]}
+        self.assertEqual(load_ocr_document(json.dumps(swift_document))[0].source, EvidenceSource.UNKNOWN)
         with self.assertRaises(ValueError):
             OCRObservation.from_dict({**document["observations"][0], "confidence": 1.1})
         with self.assertRaises(ValueError):

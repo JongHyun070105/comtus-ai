@@ -498,6 +498,26 @@ class SQLiteStore:
         self.connection.commit()
         return int(row[0]), inserted
 
+    def save_capture_evidence(self, *, sha256: str, source_type: EvidenceSource | str,
+                              media_type: str = "image/png") -> tuple[int, bool]:
+        source = EvidenceSource(source_type)
+        if len(sha256) != 64 or any(character not in "0123456789abcdef" for character in sha256.lower()):
+            raise ValueError("sha256 must be a 64-character hexadecimal digest")
+        existing = self.connection.execute(
+            "SELECT id,source_type,media_type FROM capture_evidence WHERE sha256=?", (sha256.lower(),)
+        ).fetchone()
+        if existing:
+            if existing["source_type"] != source.value or existing["media_type"] != media_type:
+                raise sqlite3.IntegrityError("capture hash already exists with different provenance")
+            return int(existing["id"]), False
+        cursor = self.connection.execute(
+            """INSERT INTO capture_evidence(sha256,media_type,source_type,created_at)
+            VALUES(?,?,?,?)""",
+            (sha256.lower(), media_type, source.value, utc_now()),
+        )
+        self.connection.commit()
+        return int(cursor.lastrowid), True
+
     def record_ocr_correction(self, observation_id: int, corrected_text: str, *, reason: str | None = None,
                               corrected_by: str | None = None) -> int:
         cursor = self.connection.execute(

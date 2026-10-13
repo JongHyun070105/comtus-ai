@@ -1,9 +1,13 @@
 import hashlib
 import json
+import platform
 import tempfile
 import unittest
+from contextlib import redirect_stdout
+from io import StringIO
 from pathlib import Path
 
+from comtus_ai.cli import _swift_command, main
 from comtus_ai.database import SQLiteStore
 from comtus_ai.models import EvidenceSource
 from comtus_ai.observations import load_ocr_document
@@ -38,6 +42,38 @@ class SyntheticPipelineTests(unittest.TestCase):
                 self.assertEqual(store.counts()["team_snapshots"], 1)
                 self.assertIn('"probability_calibrated": false', encoded)
                 self.assertEqual(report["score_type"], "HEURISTIC_SCORE")
+
+    @unittest.skipUnless(platform.system() == "Darwin", "Swift Vision integration requires macOS")
+    def test_swift_vision_json_to_python_sqlite_roundtrip_and_deduplication(self):
+        image = Path(__file__).parent / "fixtures" / "vision-test.png"
+        swift_command = _swift_command(["doctor"])
+        if not image.is_file() or not swift_command or not Path(swift_command[0]).is_file():
+            self.skipTest("built mac-capture executable or synthetic image fixture is unavailable")
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "swift-integration.sqlite3"
+            arguments = ["capture", "ocr", str(image), "--screen-state", "RANKING_LOBBY", "--store",
+                         "--evidence-source", "SYNTHETIC_TEST", "--database", str(database)]
+            first_stdout = StringIO()
+            with redirect_stdout(first_stdout):
+                self.assertEqual(main(arguments), 0)
+            first = json.loads(first_stdout.getvalue())
+            self.assertEqual(first["screen_state"], "UNKNOWN")
+            self.assertEqual(first["persistence"]["status"], "EXEC_PASS")
+            self.assertTrue(first["persistence"]["capture_inserted"])
+            self.assertGreater(first["persistence"]["observations_inserted"], 0)
+
+            second_stdout = StringIO()
+            with redirect_stdout(second_stdout):
+                self.assertEqual(main(arguments), 0)
+            second = json.loads(second_stdout.getvalue())
+            self.assertFalse(second["persistence"]["capture_inserted"])
+            self.assertEqual(second["persistence"]["observations_inserted"], 0)
+            self.assertEqual(second["persistence"]["observations_duplicated"],
+                             len(second["observations"]))
+
+            with SQLiteStore(database) as store:
+                self.assertEqual(store.counts()["capture_evidence"], 1)
+                self.assertEqual(store.counts()["ocr_observations"], len(first["observations"]))
 
 
 if __name__ == "__main__":

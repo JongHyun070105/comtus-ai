@@ -34,6 +34,8 @@ public struct VisionOCRProcessor: FrameProcessor {
             if abs(left.bbox[1] - right.bbox[1]) > 0.003 { return left.bbox[1] > right.bbox[1] }
             return left.bbox[0] < right.bbox[0]
         })
-        return OCRDocument(screenState: state, frameSize: [image.width, image.height], activePanel: activePanel, observations: observations)
+        let detectedState = ObservedScreenStateClassifier().classify(observations)
+        let resolvedState = state == .unknown || state == detectedState ? detectedState : .unknown
+        return OCRDocument(screenState: resolvedState, frameSize: [image.width, image.height], activePanel: activePanel, observations: observations)
     }
 }

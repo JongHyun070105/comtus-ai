@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -15,6 +16,7 @@ from . import __version__
 from .database import SQLiteStore
 from .database.store import default_database_path
 from .models import EvidenceSource
+from .observations import load_ocr_document
 from .optimizer import Opponent, Pitcher, optimize_rotation
 
 
@@ -27,8 +29,8 @@ def _print_json(value: Any) -> None:
     print(json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True))
 
 
-def _database() -> SQLiteStore:
-    store = SQLiteStore(DATABASE_PATH)
+def _database(path: Path = DATABASE_PATH) -> SQLiteStore:
+    store = SQLiteStore(path)
     store.initialize()
     return store
 
@@ -38,22 +40,89 @@ def _run_swift(arguments: list[str]) -> int:
     if command is None:
         print("BLOCKED: Swift toolchain was not found.", file=sys.stderr)
         return 2
-    environment = os.environ.copy()
-    manual_library = REPO_ROOT / "apps" / "mac-capture" / ".build" / "manual"
-    if command[0] == str(manual_library / "mac-capture"):
-        environment["DYLD_LIBRARY_PATH"] = str(manual_library) + (os.pathsep + environment["DYLD_LIBRARY_PATH"] if environment.get("DYLD_LIBRARY_PATH") else "")
-    result = subprocess.run(command, cwd=REPO_ROOT, env=environment, check=False)
+    result = subprocess.run(command, cwd=REPO_ROOT, env=_swift_environment(command), check=False)
     return result.returncode
+
+
+def _swift_environment(command: list[str]) -> dict[str, str]:
+    environment = os.environ.copy()
+    binary_directory = Path(command[0]).parent
+    if any(binary_directory.glob("*.dylib")):
+        environment["DYLD_LIBRARY_PATH"] = str(binary_directory) + (os.pathsep + environment["DYLD_LIBRARY_PATH"] if environment.get("DYLD_LIBRARY_PATH") else "")
+    return environment
+
+
+def _run_swift_ocr(args: argparse.Namespace) -> int:
+    command = ["ocr", "--image", str(args.image), "--screen-state", args.screen_state]
+    if args.active_panel:
+        command += ["--active-panel", *(str(value) for value in args.active_panel)]
+    if not args.store:
+        return _run_swift(command)
+
+    swift_command = _swift_command(command)
+    if swift_command is None:
+        print("BLOCKED: Swift toolchain was not found.", file=sys.stderr)
+        return 2
+    result = subprocess.run(swift_command, cwd=REPO_ROOT, env=_swift_environment(swift_command),
+                            check=False, capture_output=True, text=True)
+    if result.returncode != 0:
+        if result.stdout:
+            print(result.stdout, end="")
+        if result.stderr:
+            print(result.stderr, end="", file=sys.stderr)
+        return result.returncode
+
+    document = json.loads(result.stdout)
+    observations = load_ocr_document(result.stdout)
+    image_bytes = args.image.read_bytes()
+    media_type = "image/jpeg" if args.image.suffix.lower() in {".jpg", ".jpeg"} else "image/png"
+    digest = hashlib.sha256(image_bytes).hexdigest()
+    with _database(args.database) as store:
+        evidence_id, evidence_inserted = store.save_capture_evidence(
+            sha256=digest, source_type=args.evidence_source, media_type=media_type,
+        )
+        inserted_count = 0
+        observation_ids: list[int] = []
+        for observation in observations:
+            observation_id, inserted = store.save_ocr_observation(
+                evidence_id=evidence_id, field=observation.field, text=observation.text,
+                confidence=observation.confidence, bbox=list(observation.bbox),
+                source_type=args.evidence_source, schema_version=observation.schema_version,
+            )
+            observation_ids.append(observation_id)
+            inserted_count += int(inserted)
+    document["persistence"] = {
+        "status": "EXEC_PASS",
+        "capture_evidence_id": evidence_id,
+        "capture_inserted": evidence_inserted,
+        "observation_ids": observation_ids,
+        "observations_inserted": inserted_count,
+        "observations_duplicated": len(observations) - inserted_count,
+        "source": args.evidence_source,
+    }
+    _print_json(document)
+    return 0
 
 
 def _swift_command(arguments: list[str]) -> list[str] | None:
     package = REPO_ROOT / "apps" / "mac-capture"
-    release_binary = package / ".build" / "release" / "mac-capture"
-    manual_binary = package / ".build" / "manual" / "mac-capture"
-    if release_binary.is_file():
-        return [str(release_binary), *arguments]
-    if manual_binary.is_file():
-        return [str(manual_binary), *arguments]
+    configured_binary = os.environ.get("COMTUS_AI_SWIFT_BIN")
+    if configured_binary:
+        binary = Path(configured_binary).expanduser()
+        return [str(binary), *arguments] if binary.is_file() else None
+    binaries = (
+        package / ".build" / "release" / "mac-capture",
+        package / ".build" / "arm64-apple-macosx" / "release" / "mac-capture",
+        package / ".build" / "manual-release" / "mac-capture",
+        package / ".build" / "out" / "Products" / "Release" / "mac-capture",
+        package / ".build" / "manual" / "mac-capture",
+    )
+    source_files = tuple((package / "Sources").rglob("*.swift"))
+    newest_source = max((source.stat().st_mtime_ns for source in source_files), default=0)
+    available = [binary for binary in binaries if binary.is_file() and binary.stat().st_mtime_ns >= newest_source]
+    if available:
+        binary = max(available, key=lambda candidate: candidate.stat().st_mtime_ns)
+        return [str(binary), *arguments]
     if shutil.which("swift") is None:
         return None
     return ["swift", "run", "--package-path", str(package), "mac-capture", *arguments]
@@ -154,6 +223,11 @@ def build_parser() -> argparse.ArgumentParser:
     ocr = capture.add_parser("ocr", help="Run Vision OCR on a local image")
     ocr.add_argument("image", type=Path)
     ocr.add_argument("--active-panel", nargs=4, type=float, metavar=("X", "Y", "W", "H"), help="Normalized active-panel ROI")
+    ocr.add_argument("--screen-state", choices=("HOME", "RANKING_LOBBY", "PITCHER_ORDER", "OPPONENT_LINEUP", "PLAYER_DETAIL_BATTER", "PLAYER_DETAIL_PITCHER", "TEAM_ROSTER", "SYNERGY", "POSITION_TRAINING", "MATCH_RESULT", "UNKNOWN"), default="UNKNOWN")
+    ocr.add_argument("--store", action="store_true", help="Store capture hash and OCR observations in SQLite")
+    ocr.add_argument("--evidence-source", choices=tuple(source.value for source in EvidenceSource), default=EvidenceSource.UNKNOWN.value,
+                     help="Provenance label for a stored capture; defaults to UNKNOWN")
+    ocr.add_argument("--database", type=Path, default=DATABASE_PATH, help="SQLite path used with --store")
     roster = sub.add_parser("roster", help="Show saved team snapshots").add_subparsers(dest="roster_command", required=True)
     show = roster.add_parser("show")
     show.add_argument("--account")
@@ -178,10 +252,7 @@ def main(argv: list[str] | None = None) -> int:
             swift_args = _swift_command(["doctor"])
             swift_status: dict[str, object] = {"available": swift_args is not None, "capture_permission": "NOT_CHECKED"}
             if swift_args:
-                environment = os.environ.copy()
-                manual_library = REPO_ROOT / "apps" / "mac-capture" / ".build" / "manual"
-                if swift_args[0] == str(manual_library / "mac-capture"):
-                    environment["DYLD_LIBRARY_PATH"] = str(manual_library) + (os.pathsep + environment["DYLD_LIBRARY_PATH"] if environment.get("DYLD_LIBRARY_PATH") else "")
+                environment = _swift_environment(swift_args)
                 result = subprocess.run(
                     swift_args, cwd=REPO_ROOT, env=environment, check=False, capture_output=True, text=True,
                 )
@@ -208,10 +279,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.output.parent.mkdir(parents=True, exist_ok=True)
                 return _run_swift(["capture", "--window-id", str(args.window_id), "--output", str(args.output)])
             if args.capture_command == "ocr":
-                command = ["ocr", "--image", str(args.image)]
-                if args.active_panel:
-                    command += ["--active-panel", *(str(value) for value in args.active_panel)]
-                return _run_swift(command)
+                return _run_swift_ocr(args)
         if args.command == "roster" and args.roster_command == "show":
             return _roster_show(args.account)
         if args.command == "roster" and args.roster_command == "diff":

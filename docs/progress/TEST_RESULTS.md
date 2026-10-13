@@ -2,6 +2,34 @@
 
 Updated: 2026-10-13. `EXEC PASS` denotes an executed command; compiled-but-not-executed XCTest cases are not counted as passing tests.
 
+## Current task run — 2026-10-13
+
+### EXEC PASS
+
+- `PYTHONPATH=packages/python/src .venv/bin/python -m unittest discover -s packages/python/tests -v`: 28/28 passed; the prior 27 tests remain, with one Swift→Python→SQLite integration test added.
+- `.venv/bin/comtus-ai doctor`: Swift ScreenCaptureKit/Vision available and Screen Recording permission true.
+- Direct optimized Swift 6.4 `swiftc` build of `MacCaptureCore` and CLI passed after the capture initialization fix. `doctor` and window listing passed with the built binary.
+- Actual capture: fresh `capture list` selected the on-screen window by `process_name=V26` plus non-empty `title`; `capture once` and Korean Vision OCR passed at 1620×2224 px.
+- Actual SQLite persistence: four `SCREEN_CAPTURE_VERIFIED` frame records and 364 observations were saved locally; replaying one exact frame saved 91 observations once and 0 on the second pass (91 duplicates). Temporary source PNGs were removed. The SQLite database is ignored under `data/` and was not committed.
+- Synthetic integration: Swift Vision recognized the fixture text, Python parsed Swift's `source="vision"` JSON, and SQLite retained one capture and its observations across two identical ingest runs.
+- Actual state profile: the collected top-center `랭킹 챌린지` title was recognized as `RANKING_LOBBY`; ambiguous/unsupported anchors remain `UNKNOWN`.
+- `git diff --check` passed.
+
+### EXEC FAIL (recovered)
+
+- The first live capture exited on CoreGraphics `CGS_REQUIRE_INIT`. Initializing `NSApplication` on the CLI main actor fixed it; subsequent fresh-window capture and OCR passed.
+
+### STATIC
+
+- The Swift XCTest target was not run by XCTest. Standalone test-target typechecking could not load the Xcode XCTest module; the new XCTest assertion remains unverified. The production classifier smoke harness did execute.
+- Lineup-detail and player-detail recognition have no collected real screen profiles and deliberately return `UNKNOWN`.
+
+### BLOCKED
+
+- `swift test --package-path apps/mac-capture -c release` is blocked before manifest execution because host `sandbox-exec` returns `sandbox_apply: Operation not permitted`; no bypass was used.
+
+## Prior checkpoint results
+
 ## EXEC PASS
 
 - `.venv/bin/python -m comtus_ai test`: 27/27 Python unit and synthetic integration tests passed.

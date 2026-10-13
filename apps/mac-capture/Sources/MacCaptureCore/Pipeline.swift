@@ -15,9 +15,27 @@ public protocol InferenceEngine: Sendable {
 }
 
 public struct UnknownScreenStateClassifier: Sendable {
-    /// No title/keyword profiles are enabled until they are verified against real game screens.
     public init() {}
     public func classify(_: [TextObservation]) -> ScreenState { .unknown }
+}
+
+public struct ObservedScreenStateClassifier: Sendable {
+    public init() {}
+
+    public func classify(_ observations: [TextObservation]) -> ScreenState {
+        // This anchor was captured from a real V26 screen. Keep the profile
+        // narrow until distinct lineup and player-detail screens are collected.
+        let hasRankingChallengeTitle = observations.contains { observation in
+            let normalized = observation.text.filter { !$0.isWhitespace }
+            let box = observation.bbox
+            return normalized == "랭킹챌린지"
+                && observation.confidence >= 0.95
+                && box.count == 4
+                && box[1] >= 0.9
+                && (0.35...0.65).contains(box[0] + box[2] / 2)
+        }
+        return hasRankingChallengeTitle ? .rankingLobby : .unknown
+    }
 }
 
 public struct LatencyStatistics: Codable, Equatable, Sendable {

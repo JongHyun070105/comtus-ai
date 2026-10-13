@@ -6,10 +6,17 @@ import MacCaptureCore
 
 @main
 struct MacCaptureCLI {
+    private struct WindowListResponse: Encodable {
+        let status: String
+        let windows: [WindowDescriptor]
+    }
+
+    @MainActor
     static func main() async {
         do {
             let args = Array(CommandLine.arguments.dropFirst())
             guard let command = args.first else { throw CaptureFailure.invalidArguments("Expected doctor, windows, capture, or ocr.") }
+            if command == "capture" { _ = NSApplication.shared }
             switch command {
             case "doctor":
                 try printJSON(["status": "EXEC_PASS", "screen_recording_permission": CGPreflightScreenCaptureAccess(),
@@ -17,7 +24,7 @@ struct MacCaptureCLI {
                                "capture_backend": "ScreenCaptureKit", "ocr_backend": "Vision"])
             case "windows":
                 let windows = try await ScreenCaptureFrameSource().listWindows()
-                try printJSON(["status": windows.isEmpty ? "NO_WINDOWS" : "EXEC_PASS", "windows": windows])
+                try printJSON(WindowListResponse(status: windows.isEmpty ? "NO_WINDOWS" : "EXEC_PASS", windows: windows))
             case "capture":
                 let windowID = try uint32Option("--window-id", in: args)
                 let output = try stringOption("--output", in: args)

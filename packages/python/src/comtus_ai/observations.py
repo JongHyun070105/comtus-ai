@@ -33,7 +33,11 @@ class OCRObservation:
         if not isinstance(bbox, (list, tuple)) or len(bbox) != 4:
             raise ValueError("bbox must be a four-element array")
         try:
-            source = EvidenceSource(value.get("source", "UNKNOWN"))
+            raw_source = value.get("source", "UNKNOWN")
+            # Swift identifies the OCR engine as "vision". That is not an
+            # evidence provenance claim, so keep it separate from trusted
+            # evidence-source values and fail closed to UNKNOWN.
+            source = EvidenceSource.UNKNOWN if raw_source == "vision" else EvidenceSource(raw_source)
             confidence = value.get("confidence")
             return cls(
                 text=str(value["text"]),

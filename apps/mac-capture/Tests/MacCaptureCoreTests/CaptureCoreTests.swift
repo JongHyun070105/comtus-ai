@@ -36,6 +36,16 @@ final class CaptureCoreTests: XCTestCase {
         XCTAssertEqual(UnknownScreenStateClassifier().classify([]), .unknown)
     }
 
+    func testObservedScreenClassifierUsesOnlyTheCapturedRankingChallengeTitleAnchor() {
+        let classifier = ObservedScreenStateClassifier()
+        let titleBox = try! ScreenRegion(x: 0.433, y: 0.932, width: 0.098, height: 0.018)
+        let offscreenTitleBox = try! ScreenRegion(x: 0.433, y: 0.5, width: 0.098, height: 0.018)
+        XCTAssertEqual(classifier.classify([TextObservation(text: "랭킹 챌린지", confidence: 1, bbox: titleBox)]), .rankingLobby)
+        XCTAssertEqual(classifier.classify([TextObservation(text: "라인업", confidence: 1, bbox: titleBox)]), .unknown)
+        XCTAssertEqual(classifier.classify([TextObservation(text: "랭킹 챌린지", confidence: 0.8, bbox: titleBox)]), .unknown)
+        XCTAssertEqual(classifier.classify([TextObservation(text: "랭킹 챌린지", confidence: 1, bbox: offscreenTitleBox)]), .unknown)
+    }
+
     func testLatencyProfilerReportsTailPercentilesAndMissedFrames() async {
         let profiler = LatencyProfiler()
         await profiler.record(stage: "capture", durationMilliseconds: 8)
@@ -78,6 +88,7 @@ final class CaptureCoreTests: XCTestCase {
         let document = try processor.process(image, activePanel: .fullFrame, state: .unknown)
         XCTAssertEqual(document.schemaVersion, 1)
         XCTAssertEqual(document.frameSize, [width, height])
+        XCTAssertEqual(try processor.process(image, activePanel: .fullFrame, state: .rankingLobby).screenState, .unknown)
         XCTAssertFalse(document.observations.isEmpty)
         XCTAssertTrue(document.observations.allSatisfy { observation in
             observation.schemaVersion == 1 && observation.source == "vision" && observation.confidence >= 0 && observation.confidence <= 1
