@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 import math
+import re
 from typing import Mapping, Sequence
 
 from .observations import OCRObservation
@@ -36,7 +37,7 @@ class PanelRole(StrEnum):
     UNKNOWN = "UNKNOWN"
 
 
-SCREEN_PROFILE_VERSION = "screen-profiles-v2"
+SCREEN_PROFILE_VERSION = "screen-profiles-v3"
 
 
 @dataclass(frozen=True, slots=True)
@@ -121,6 +122,10 @@ def recognize_screen(observations: Sequence[OCRObservation]) -> ScreenClassifica
     instruction: list[int] = []
     reset: list[int] = []
     save: list[int] = []
+    swap: list[int] = []
+    back: list[int] = []
+    own_starter_roles: dict[int, int] = {}
+    opponent_starter_roles: dict[int, int] = {}
     for index, observation in enumerate(observations):
         if observation.confidence is None or observation.confidence < 0.3:
             continue
@@ -134,12 +139,46 @@ def recognize_screen(observations: Sequence[OCRObservation]) -> ScreenClassifica
             reset.append(index)
         if text == "저장" and x > 0.58 and y < 0.12:
             save.append(index)
+        if text == "선수교체" and 0.40 <= x <= 0.60 and y < 0.10:
+            swap.append(index)
+        if "뒤로가기" in text and 0.35 <= x <= 0.65 and y < 0.05:
+            back.append(index)
+        role = re.fullmatch(r"([1-5])선발[RL]", text)
+        if role and observation.confidence >= 0.9 and 0.15 <= y <= 0.78:
+            if 0.18 <= x <= 0.30:
+                own_starter_roles.setdefault(int(role.group(1)), index)
+            elif 0.34 <= x <= 0.44:
+                opponent_starter_roles.setdefault(int(role.group(1)), index)
 
     if title and instruction and reset and save:
-        indices = (title[0], instruction[0], reset[0], save[0])
-        confidences = [observations[index].confidence for index in indices]
-        confidence = min(confidences) if all(value is not None for value in confidences) else None
-        status = ClassificationStatus.VERIFIED if confidence is not None and confidence >= 0.85 else ClassificationStatus.CANDIDATE
+        legacy_indices = [title[0], instruction[0], reset[0], save[0]]
+        # The real screenshot has low OCR confidence on its title and action
+        # labels. Require their presence and placement, then verify the layout
+        # with the high-confidence instruction, reset label, and three distinct
+        # own-starter role labels. Opponent-side roles are outside this x band.
+        role_indices = [own_starter_roles[key] for key in sorted(own_starter_roles)]
+        opponent_role_indices = [opponent_starter_roles[key] for key in sorted(opponent_starter_roles)]
+        structurally_verified = (
+            len(role_indices) >= 2 and 1 in own_starter_roles
+            and len(opponent_role_indices) >= 2
+            and bool(swap) and bool(back)
+            and observations[instruction[0]].confidence >= 0.85
+            and observations[reset[0]].confidence >= 0.85
+        )
+        if structurally_verified:
+            layout_indices = [*legacy_indices, *role_indices, *opponent_role_indices,
+                              swap[0], back[0]]
+            # Confidence describes the strong structural anchors. Low-confidence
+            # title/action OCR remains recorded in anchor_indices for auditing.
+            confidence = min(observations[index].confidence for index in
+                             (instruction[0], reset[0], *role_indices, *opponent_role_indices))
+            status = (ClassificationStatus.VERIFIED if confidence >= 0.85
+                      else ClassificationStatus.CANDIDATE)
+            indices = tuple(layout_indices)
+        else:
+            indices = tuple(legacy_indices)
+            confidence = min(observations[index].confidence for index in indices)
+            status = ClassificationStatus.VERIFIED if confidence >= 0.85 else ClassificationStatus.CANDIDATE
         return ScreenClassification(ScreenState.PITCHER_ORDER, status, confidence, indices)
 
     return ScreenClassification(ScreenState.UNKNOWN, ClassificationStatus.UNKNOWN, None)

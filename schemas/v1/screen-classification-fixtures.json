@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "profile_version": "screen-profiles-v2",
+  "profile_version": "screen-profiles-v3",
   "minimum_anchor_confidence": 0.3,
   "verified_confidence": 0.85,
   "screen_states": [
@@ -27,6 +27,22 @@
         {"text": "저장", "confidence": 0.5, "bbox": [0.696, 0.056, 0.042, 0.019]}
       ],
       "expected": {"state": "PITCHER_ORDER", "status": "CANDIDATE", "confidence": 0.5, "anchor_indices": [0, 1, 2, 3]}
+    },
+    {
+      "name": "pitcher-order-real-layout-verified",
+      "observations": [
+        {"text": "{ 선발 투수 변경", "confidence": 0.5, "bbox": [0.365, 0.825, 0.244, 0.028]},
+        {"text": "좌측에 표시되는 내 선발 투수의 순서를 변경할 수 있습니다.", "confidence": 1.0, "bbox": [0.289, 0.789, 0.435, 0.016]},
+        {"text": "원래대로", "confidence": 1.0, "bbox": [0.245, 0.056, 0.080, 0.019]},
+        {"text": "저장", "confidence": 0.5, "bbox": [0.696, 0.056, 0.042, 0.019]},
+        {"text": "1선발 R", "confidence": 1.0, "bbox": [0.222, 0.737, 0.050, 0.012]},
+        {"text": "3선발 L", "confidence": 1.0, "bbox": [0.222, 0.218, 0.050, 0.013]},
+        {"text": "3선발 R", "confidence": 1.0, "bbox": [0.373, 0.735, 0.050, 0.013]},
+        {"text": "5선발 R", "confidence": 1.0, "bbox": [0.373, 0.218, 0.050, 0.012]},
+        {"text": "선수 교체", "confidence": 0.5, "bbox": [0.457, 0.053, 0.086, 0.021]},
+        {"text": "< 뒤로가기", "confidence": 0.5, "bbox": [0.439, 0.012, 0.114, 0.019]}
+      ],
+      "expected": {"state": "PITCHER_ORDER", "status": "VERIFIED", "confidence": 1.0, "anchor_indices": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]}
     },
     {
       "name": "low-confidence-anchor-is-unknown",

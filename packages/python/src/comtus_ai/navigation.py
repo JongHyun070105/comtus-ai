@@ -282,6 +282,7 @@ class SafetyController:
     halt_reason: str | None = None
     _attempts: dict[int, int] = field(default_factory=dict)
     navigation_goal: str | None = None
+    checkpoint: NavigationCheckpoint | None = None
     _visited: set[NavigationVisitKey] = field(default_factory=set)
     _collected: set[CollectionKey] = field(default_factory=set)
 
@@ -323,20 +324,57 @@ class SafetyController:
         self._collected.add(key)
         return True
 
-    def pause_for_user_input(self) -> None:
+    def pause_for_user_input(self, *, frame: ScreenFrame | None = None, step_index: int = 0) -> None:
         if self.status == SessionStatus.COLLECTING:
             self.status = SessionStatus.PAUSED
+            self.halt_reason = "user input detected"
+            if frame is not None:
+                self.checkpoint = NavigationCheckpoint.from_frame(frame, step_index, self.halt_reason)
 
-    def resume(self, *, explicitly_requested: bool) -> None:
+    def pause_for_focus_loss(self, *, frame: ScreenFrame, step_index: int = 0) -> None:
+        if self.status == SessionStatus.COLLECTING:
+            self.status = SessionStatus.PAUSED
+            self.halt_reason = "game window focus lost"
+            self.checkpoint = NavigationCheckpoint.from_frame(frame, step_index, self.halt_reason)
+
+    def resume(self, *, explicitly_requested: bool, observed_frame: ScreenFrame | None = None) -> None:
         if self.status != SessionStatus.PAUSED or not explicitly_requested:
             raise RuntimeError("resume requires a paused session and explicit user request")
+        if self.checkpoint is not None:
+            if observed_frame is None or observed_frame.status != ClassificationStatus.VERIFIED:
+                raise RuntimeError("resume requires a fresh verified checkpoint screen")
+            if (observed_frame.state != self.checkpoint.screen_state
+                    or (self.checkpoint.player_key is not None
+                        and (not observed_frame.player_verified or observed_frame.player_key != self.checkpoint.player_key))
+                    or (self.checkpoint.page is not None
+                        and (not observed_frame.page_verified or observed_frame.page != self.checkpoint.page))):
+                self.emergency_stop(frame=observed_frame, step_index=self.checkpoint.step_index,
+                                    reason="checkpoint screen changed before resume")
+                raise RuntimeError(self.halt_reason)
         self.status = SessionStatus.COLLECTING
+        self.halt_reason = None
 
-    def emergency_stop(self) -> None:
+    def emergency_stop(self, *, frame: ScreenFrame | None = None, step_index: int = 0,
+                       reason: str = "emergency stop") -> None:
         self.status = SessionStatus.HALTED
-        self.halt_reason = "emergency stop"
+        self.halt_reason = reason
+        if frame is not None:
+            self.checkpoint = NavigationCheckpoint.from_frame(frame, step_index, reason)
 
-    def before_action(self, *, frame: ScreenFrame, transition: Transition, depth: int, step_index: int) -> bool:
+    def before_action(self, *, frame: ScreenFrame, transition: Transition, depth: int, step_index: int,
+                      user_idle: bool = True, game_focused: bool = True,
+                      emergency_stop_requested: bool = False) -> bool:
+        if self.status == SessionStatus.COLLECTING:
+            self.checkpoint = NavigationCheckpoint.from_frame(frame, step_index, "before action")
+            if emergency_stop_requested:
+                self.emergency_stop(frame=frame, step_index=step_index)
+                return False
+            if not game_focused:
+                self.pause_for_focus_loss(frame=frame, step_index=step_index)
+                return False
+            if not user_idle:
+                self.pause_for_user_input(frame=frame, step_index=step_index)
+                return False
         if self.status in (SessionStatus.PAUSED, SessionStatus.HALTED, SessionStatus.STOPPED, SessionStatus.COMPLETE):
             return False
         if self.status != SessionStatus.COLLECTING:
@@ -392,6 +430,8 @@ class SafetyController:
         if key in self._visited:
             return self._halt("duplicate player/page visit blocked")
         self._visited.add(key)
+        self.checkpoint = NavigationCheckpoint.from_frame(frame, self.checkpoint.step_index if self.checkpoint else 0,
+                                                         "verified action result")
         return True
 
     def _expected_visit(self, transition: Transition) -> NavigationVisitKey | None:
@@ -424,6 +464,20 @@ class NavigationResult:
     route: NavigationRoute | None
     halt_reason: str | None = None
     recovery_plan: NavigationRoute | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class NavigationCheckpoint:
+    screen_state: ScreenState
+    player_key: str | None
+    page: int | None
+    step_index: int
+    reason: str
+
+    @classmethod
+    def from_frame(cls, frame: ScreenFrame, step_index: int, reason: str) -> NavigationCheckpoint:
+        return cls(frame.state, frame.player_key if frame.player_verified else None,
+                   frame.page if frame.page_verified else None, step_index, reason)
 
 
 class SimulatedNavigator:

@@ -2,7 +2,20 @@
 
 Updated: 2026-10-13
 
-## v0.2.2 current checkpoint — 2026-10-13
+## v0.3 UI input and navigation preparation — 2026-10-13
+
+- Added Swift `MacGameInputAdapter`: separate safe-navigation and account-changing action types; exact V26 bundle/process/window checks; Accessibility press when one exact labeled action is available; otherwise CGEvent-to-PID fallback; frontmost-window and idle-user gates; listen-only input monitoring with Escape emergency stop; bounded retry; before/after capture verification; private checkpoint/action log at `~/Library/Application Support/comtus-ai/private/ui-actions.jsonl` (directory 0700, file 0600).
+- Added Retina pixel-to-point and AppKit-to-Quartz mapping for window-relative Vision boxes, including negative-origin displays. A stale plan is invalidated if window position, size, display, pixel dimensions, or backing scale changes. The only allowlisted plan is the measured first-starter card opening; save/reset/swap and other account-changing actions cannot be constructed as safe plans.
+- Upgraded screen profile to v3 with distinct own/opponent lineup roles, instruction/title and footer evidence. The preserved pitcher-order PNG now classifies as `PITCHER_ORDER:VERIFIED` in matching Python/Swift recognition. This verifies layout anchors only; the player name in that image remains a `CANDIDATE` and does not authorize clicking.
+- Added `comtus-ai navigate collect --dry-run`, `--allow-ui-input --idle-only`, and kept `capture session --preserve-images` as a separate read-only mode. In this run both navigation commands returned `BLOCKED / V26_WINDOW_NOT_FOUND`, `input_sent:false`; no new image or database row was created. The live path also requires verified player-detail recognition before page navigation.
+- Current OS preflight from `doctor`: Screen Recording, Accessibility, Post Event, and Input Monitoring are true. These are local OS permissions only. Com2uS Korean V26 automation policy remains `NOT_VERIFIABLE`; no policy allowance or prohibition is inferred. The CLI reports that policy status but blocks on missing live screen, target identity, and detail-transition evidence rather than treating uncertainty alone as proof of a ban.
+- Current SQLite v4 remains unchanged: 20 captures, 1,835 OCR observations, 20 screen observations, 144 field candidates (8 `CANDIDATE`, 136 `LOW_CONFIDENCE`), 16 private images, 2 corrections, 0 verified player snapshots. Integrity is `ok`; foreign-key violations: 0. No verified real player fields were added; player-detail values remain `UNKNOWN`.
+- Full Python suite: 91/91 passed on the final run. Direct source-matched Swift release compilation and doctor passed. SwiftPM/XCTest remains blocked before manifest evaluation by `sandbox_apply: Operation not permitted`; the new XCTest cases were not executed.
+- Added and executed `apps/mac-capture/Scripts/run_input_adapter_smoke.sh`: Retina/window-relative and negative-origin display mapping, stale-plan rejection, expected/wrong-player transition checks, user-idle reset, and emergency-stop state all passed. The smoke harness sends no UI event.
+- This run measured only ~0.25 seconds for window discovery with no matching game window. No current screen capture or click occurred, so current capture and click latency are unavailable. The earlier 379.4/396.6 ms capture p50/p95 remains historical evidence only.
+- No actual menu click, player page traversal, or live data collection succeeded. See [policy review](../research/COM2US_UI_AUTOMATION_POLICY.md) and [blockers](BLOCKERS.md).
+
+## v0.2.2 checkpoint — 2026-10-13
 
 - Capture discovery now requires process name exactly `V26`, the verified macOS bundle ID when present, and a live positive PID. Window title is independent metadata; terminal titles cannot qualify. Multiple game windows fail closed. PID/window ID/bundle ID are rechecked immediately before ScreenCaptureKit capture; a missing window is rediscovered on the next poll.
 - Capture dedup now keeps exact image SHA, separate whole-frame stability and fixed content-region signatures, screen state, high-confidence OCR text at normalized coordinates, and parsed player/page candidates distinct. Similarity alone does not suppress a field-text or major-region change. Sustained small animation is covered by synthetic regression tests.

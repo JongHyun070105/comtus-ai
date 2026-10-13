@@ -45,13 +45,53 @@ public struct ObservedScreenStateClassifier: Sendable {
         let instruction = matching { $0.contains("내선발투수의순서를변경할수있습니다") && (0.25...0.75).contains($1) && (0.74...0.84).contains($2) }
         let reset = matching { $0 == "원래대로" && $1 < 0.42 && $2 < 0.12 }
         let save = matching { $0 == "저장" && $1 > 0.58 && $2 < 0.12 }
+        let swap = matching { $0 == "선수교체" && (0.40...0.60).contains($1) && $2 < 0.10 }
+        let back = matching { $0.contains("뒤로가기") && (0.35...0.65).contains($1) && $2 < 0.05 }
+        var ownStarterRoles: [Int: (Int, TextObservation)] = [:]
+        var opponentStarterRoles: [Int: (Int, TextObservation)] = [:]
+        for (index, observation) in observations.enumerated() {
+            let text = observation.text.filter { !$0.isWhitespace }
+            let box = observation.bbox
+            guard box.count == 4, observation.confidence >= 0.9,
+                  (text.hasSuffix("R") || text.hasSuffix("L")),
+                  let number = Int(text.prefix(1)), (1...5).contains(number),
+                  text.hasPrefix("\(number)선발"),
+                  (0.15...0.78).contains(box[1] + box[3] / 2) else { continue }
+            let centerX = box[0] + box[2] / 2
+            if (0.18...0.30).contains(centerX) {
+                ownStarterRoles[number] = ownStarterRoles[number] ?? (index, observation)
+            } else if (0.34...0.44).contains(centerX) {
+                opponentStarterRoles[number] = opponentStarterRoles[number] ?? (index, observation)
+            }
+        }
         if let title, let instruction, let reset, let save {
-            let anchors = [title, instruction, reset, save]
-            let confidence = anchors.map { $0.1.confidence }.min()
-            if let confidence, confidence >= ScreenProfileContract.minimumAnchorConfidence {
+            let legacyAnchors = [title, instruction, reset, save]
+            let roleAnchors = ownStarterRoles.keys.sorted().compactMap { ownStarterRoles[$0] }
+            let opponentRoleAnchors = opponentStarterRoles.keys.sorted().compactMap { opponentStarterRoles[$0] }
+            let structurallyVerified = roleAnchors.count >= 2
+                && ownStarterRoles[1] != nil
+                && opponentRoleAnchors.count >= 2
+                && swap != nil && back != nil
+                && instruction.1.confidence >= ScreenProfileContract.verifiedConfidence
+                && reset.1.confidence >= ScreenProfileContract.verifiedConfidence
+            let anchors: [(Int, TextObservation)]
+            let confidence: Double
+            let status: ScreenClassificationStatus
+            if structurallyVerified {
+                anchors = legacyAnchors + roleAnchors + opponentRoleAnchors + [swap, back].compactMap { $0 }
+                confidence = min(instruction.1.confidence, reset.1.confidence,
+                                 roleAnchors.map { $0.1.confidence }.min() ?? 0,
+                                 opponentRoleAnchors.map { $0.1.confidence }.min() ?? 0)
+                status = confidence >= ScreenProfileContract.verifiedConfidence ? .verified : .candidate
+            } else {
+                anchors = legacyAnchors
+                confidence = legacyAnchors.map { $0.1.confidence }.min() ?? 0
+                status = confidence >= ScreenProfileContract.verifiedConfidence ? .verified : .candidate
+            }
+            if confidence >= ScreenProfileContract.minimumAnchorConfidence {
                 return ScreenClassification(
                     state: .pitcherOrder,
-                    status: confidence >= ScreenProfileContract.verifiedConfidence ? .verified : .candidate,
+                    status: status,
                     confidence: confidence,
                     anchorIndices: anchors.map(\.0),
                     profileVersion: ScreenProfileContract.version

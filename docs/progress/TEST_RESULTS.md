@@ -2,7 +2,27 @@
 
 Updated: 2026-10-13. `EXEC PASS` denotes an executed command; compiled-but-not-executed XCTest cases are not counted as passing tests.
 
-## v0.2.2 current validation — 2026-10-13
+## v0.3 UI-input implementation validation — 2026-10-13
+
+### EXEC PASS
+
+- Full Python suite: `PYTHONPATH=packages/python/src .venv/bin/python -m unittest discover -s packages/python/tests -v` ran 91 tests; all 91 passed on the final run.
+- `.venv/bin/comtus-ai doctor` compiled current Swift core/CLI with the source-matched direct compiler fallback after SwiftPM manifest evaluation was blocked. Screen Recording, Accessibility, Post Event, and listen-only Input Monitoring preflights reported true. No permission prompt was requested.
+- `apps/mac-capture/Scripts/run_input_adapter_smoke.sh`: direct Swift compile-and-run smoke passed Retina mapping, negative-origin display mapping, stale-window-plan rejection, correct/wrong-player transition verification, user-idle reset, and emergency-stop model checks. It sent no mouse or keyboard event.
+- The saved real pitcher-order PNG matched the v3 Python/Swift screen contract as `PITCHER_ORDER:VERIFIED` with the same anchors. This is screen-layout evidence, not verified player-name evidence or permission to click.
+- Read-only SQLite audit: schema migration version 4; 20 capture rows, 1,835 OCR observations, 20 screen observations, 144 field candidates (8 `CANDIDATE`, 136 `LOW_CONFIDENCE`), 16 private fixture assets, 2 corrections, and 0 player snapshots. `integrity_check=ok`; foreign-key violations: 0.
+- `git diff --check` passed before documentation checkpointing.
+
+### STATIC / SKIP / BLOCKED
+
+- **BLOCKED — current live UI:** process PID 81562 exists, but ScreenCaptureKit enumerated no eligible visible V26 window; both `navigate collect --dry-run` and `navigate collect --allow-ui-input --idle-only` returned `V26_WINDOW_NOT_FOUND`, `input_sent:false`. No fresh screenshot or click latency was measurable. No Accessibility target tree, actual menu click, page traversal, or player capture was verified.
+- **BLOCKED — SwiftPM/XCTest:** `swift test --package-path apps/mac-capture -c release` fails before manifest evaluation with `sandbox-exec: sandbox_apply: Operation not permitted`; no bypass was used. New XCTest cases were authored but not executed.
+- **NOT_VERIFIABLE — applicable publisher policy:** current official materials do not establish that this Korean V26 read-only workflow is allowed or prohibited. OS permissions are not publisher authorization; no policy conclusion is inferred.
+- **STATIC — real target/profile:** the stored screenshot supports first-card geometry and layout anchors, but the first card's name OCR remains a candidate and there is no verified pitcher-detail/page profile. Low-confidence identity or unsupported pages cannot be clicked or promoted.
+- **SKIP — ARTEMIS Android exploration:** `adb devices -l` returned no attached devices; this task targets the native macOS V26 window, so no Android UI task was launched.
+- **SKIP — click/capture timing:** there was no selected live window and no input, so click duration and current frame capture latency have no sample. The command's ~0.25 s window-discovery wall time is not capture latency.
+
+## v0.2.2 validation — 2026-10-13
 
 ### EXEC PASS
 

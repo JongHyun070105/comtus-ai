@@ -1,5 +1,15 @@
 # Blockers and skips
 
+## v0.3 UI input and collection — 2026-10-13
+
+- **BLOCKED — current V26 window:** PID 81562 exists, but the latest ScreenCaptureKit enumeration found no eligible visible V26 window. The live commands returned `input_sent:false`; no new capture was stored.
+- **BLOCKED — detail-page navigation:** the saved overview validates layout anchors, but `후라도'26` identity remains a candidate and no verified pitcher-detail/page profile exists. Do not click or infer page transitions from the overview.
+- **NOT_VERIFIABLE — publisher policy:** the Korean V26 terms linked by the official listing did not yield readable conditions in this review. No clear applicable prohibition or permission was found; neither is inferred. Local OS permission does not answer the publisher-policy question; the concrete live-screen and target-verification gaps independently block clicks.
+- **BLOCKED — XCTest execution:** `swift test --package-path apps/mac-capture -c release` is rejected during manifest sandboxing. Source-matched direct Swift compilation and CLI doctor pass; XCTest cases did not execute.
+- **SKIP — real input and page collection:** zero actual clicks, zero visited detail pages, zero live player snapshots, and no current click/capture timing samples. DB remains schema v4 with 0 verified player snapshots; integrity check `ok`.
+
+## Historical v0.2.1 actual-image verification — 2026-10-13
+
 ## v0.2.1 actual-image verification — 2026-10-13
 
 - **NEEDS USER ACTION — detailed first-starter verification:** a real `PITCHER_ORDER:CANDIDATE` screen and one card ROI were captured. The visible first-starter card fields are stored as manual `CANDIDATE`, with player/page identity unresolved. The user must open that card's pitcher-detail screen while `comtus-ai capture session --preserve-images` is running; the collector must not navigate or click.

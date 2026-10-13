@@ -662,6 +662,13 @@ def build_parser() -> argparse.ArgumentParser:
     ocr.add_argument("--evidence-source", choices=tuple(source.value for source in EvidenceSource), default=EvidenceSource.UNKNOWN.value,
                      help="Provenance label for a stored capture; defaults to UNKNOWN")
     ocr.add_argument("--database", type=Path, default=DATABASE_PATH, help="SQLite path used with --store")
+    navigate = sub.add_parser("navigate", help="Plan or request a safety-gated player navigation session")
+    navigate_sub = navigate.add_subparsers(dest="navigate_command", required=True)
+    collect = navigate_sub.add_parser("collect", help="Inspect the first-starter player-detail collection path")
+    collection_mode = collect.add_mutually_exclusive_group(required=True)
+    collection_mode.add_argument("--dry-run", action="store_true", help="Inspect and report a plan without sending UI input")
+    collection_mode.add_argument("--allow-ui-input", action="store_true", help="Request live UI input behind all safety gates")
+    collect.add_argument("--idle-only", action="store_true", help="Require an idle user before any live input")
     roster = sub.add_parser("roster", help="Show saved team snapshots").add_subparsers(dest="roster_command", required=True)
     show = roster.add_parser("show")
     show.add_argument("--account")
@@ -722,6 +729,14 @@ def main(argv: list[str] | None = None) -> int:
                 return _run_capture_session(args)
             if args.capture_command == "ocr":
                 return _run_swift_ocr(args)
+        if args.command == "navigate" and args.navigate_command == "collect":
+            if args.allow_ui_input and not args.idle_only:
+                print("--allow-ui-input requires --idle-only.", file=sys.stderr)
+                return 2
+            command = ["navigate", "collect", "--dry-run" if args.dry_run else "--allow-ui-input"]
+            if args.idle_only:
+                command.append("--idle-only")
+            return _run_swift(command)
         if args.command == "roster" and args.roster_command == "show":
             return _roster_show(args.account)
         if args.command == "roster" and args.roster_command == "diff":

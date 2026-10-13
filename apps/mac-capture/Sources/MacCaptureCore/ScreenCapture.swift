@@ -50,13 +50,20 @@ public struct ScreenCaptureFrameSource: FrameSource {
         return content.windows
             .filter { $0.frame.width > 0 && $0.frame.height > 0 }
             .map { window in
-                WindowDescriptor(windowID: window.windowID,
+                let center = CGPoint(x: window.frame.midX, y: window.frame.midY)
+                let screen = NSScreen.screens.first(where: { $0.frame.contains(center) })
+                let displayID = (screen?.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value
+                return WindowDescriptor(windowID: window.windowID,
                                  title: window.title,
                                  processName: window.owningApplication?.applicationName,
                                  processID: window.owningApplication?.processID,
                                  bundleIdentifier: window.owningApplication?.bundleIdentifier,
+                                 displayID: displayID,
+                                 originXPoints: window.frame.origin.x,
+                                 originYPoints: window.frame.origin.y,
                                  widthPoints: window.frame.width,
                                  heightPoints: window.frame.height,
+                                 backingScaleFactor: Double(screen?.backingScaleFactor ?? 1),
                                  onScreen: window.isOnScreen)
             }
             .sorted { ($0.processName ?? "", $0.title ?? "", $0.windowID) < ($1.processName ?? "", $1.title ?? "", $1.windowID) }

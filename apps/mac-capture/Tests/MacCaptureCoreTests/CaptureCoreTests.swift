@@ -29,6 +29,16 @@ private struct ScreenClassificationFixtureExpected: Decodable {
 }
 
 final class CaptureCoreTests: XCTestCase {
+    private func sampleV26Window(originX: Double = 100, originY: Double = 50,
+                                 width: Double = 800, height: Double = 700,
+                                 scale: Double = 2) -> WindowDescriptor {
+        WindowDescriptor(windowID: 12, title: "컴프야V26", processName: "V26", processID: 81562,
+                         bundleIdentifier: MacGameInputAdapter.expectedV26BundleIdentifier,
+                         displayID: 1, originXPoints: originX, originYPoints: originY,
+                         widthPoints: width, heightPoints: height,
+                         backingScaleFactor: scale, onScreen: true)
+    }
+
     func testCaptureWindowMustKeepTheDiscoveredWindowProcessAndBundleIdentity() {
         XCTAssertTrue(CaptureWindowIdentity.matches(
             windowID: 12, processID: 81562, bundleIdentifier: "com.com2us.futurecpb.ios.apple.global.normal",
@@ -71,6 +81,124 @@ final class CaptureCoreTests: XCTestCase {
         XCTAssertEqual(panel.pixelRect(imageWidth: 1000, imageHeight: 500).origin.y, 50)
     }
 
+    func testVisionToQuartzMappingSeparatesRetinaPixelsAndLogicalPoints() throws {
+        let window = sampleV26Window()
+        let display = try DisplayCoordinateGeometry(appKitFrame: CGRect(x: 0, y: 0, width: 1440, height: 900),
+                                                    quartzFrame: CGRect(x: 0, y: 0, width: 1440, height: 900),
+                                                    backingScaleFactor: 2)
+        let point = try display.quartzPoint(
+            for: ScreenRegion(x: 0.25, y: 0.25, width: 0.1, height: 0.1),
+            window: window, imageWidth: 1600, imageHeight: 1400)
+        XCTAssertEqual(point.x, 340, accuracy: 0.001)
+        XCTAssertEqual(point.y, 640, accuracy: 0.001)
+        XCTAssertThrowsError(try display.quartzPoint(
+            for: ScreenRegion(x: 0.25, y: 0.25, width: 0.1, height: 0.1),
+            window: window, imageWidth: 800, imageHeight: 700))
+    }
+
+    func testVisionToQuartzMappingHandlesMovedWindowOnNegativeOriginDisplay() throws {
+        let window = sampleV26Window(originX: -1200, originY: 100)
+        let display = try DisplayCoordinateGeometry(appKitFrame: CGRect(x: -1280, y: 0, width: 1280, height: 1024),
+                                                    quartzFrame: CGRect(x: -1280, y: 0, width: 1280, height: 1024),
+                                                    backingScaleFactor: 2)
+        let point = try display.quartzPoint(
+            for: ScreenRegion(x: 0.25, y: 0.25, width: 0.1, height: 0.1),
+            window: window, imageWidth: 1600, imageHeight: 1400)
+        XCTAssertEqual(point.x, -960, accuracy: 0.001)
+        XCTAssertEqual(point.y, 714, accuracy: 0.001)
+    }
+
+    func testSafeInputPlanIsBoundToVerifiedV26SourceAndFirstCardProfile() throws {
+        let window = sampleV26Window()
+        let source = NavigationFrameEvidence(
+            window: window, imageWidth: 1600, imageHeight: 1400,
+            screen: ScreenClassification(state: .pitcherOrder, status: .verified, confidence: 1,
+                                         anchorIndices: Array(0...8)),
+            playerKey: "후라도'26", playerVerified: true, page: nil, pageVerified: false,
+            frameSHA256: String(repeating: "a", count: 64))
+        let plan = try VerifiedInputPlan(
+            action: .openPlayerCard, targetID: "pitcher-order:first-starter", targetLabel: "후라도'26",
+            region: ScreenRegion(x: 0.145, y: 0.600, width: 0.122, height: 0.2067),
+            profileVersion: "pitcher-order-layout-v1", source: source,
+            targetState: .playerDetailPitcher, targetPlayer: "후라도'26", targetPage: 1)
+
+        XCTAssertTrue(plan.matchesSource(source))
+        let wrongWindow = NavigationFrameEvidence(
+            window: WindowDescriptor(windowID: 12, title: "terminal", processName: "iTerm2", processID: 81562,
+                                     bundleIdentifier: "com.googlecode.iterm2", displayID: 1,
+                                     originXPoints: 100, originYPoints: 50, widthPoints: 800,
+                                     heightPoints: 700, backingScaleFactor: 2, onScreen: true),
+            imageWidth: 1600, imageHeight: 1400, screen: source.screen,
+            playerKey: source.playerKey, playerVerified: true, page: nil, pageVerified: false,
+            frameSHA256: source.frameSHA256)
+        XCTAssertFalse(plan.matchesSource(wrongWindow))
+        let movedWindow = NavigationFrameEvidence(
+            window: sampleV26Window(originX: 101), imageWidth: 1600, imageHeight: 1400,
+            screen: source.screen, playerKey: source.playerKey, playerVerified: true,
+            page: nil, pageVerified: false, frameSHA256: source.frameSHA256)
+        XCTAssertFalse(plan.matchesSource(movedWindow))
+        let resizedImage = NavigationFrameEvidence(
+            window: window, imageWidth: 1598, imageHeight: 1400,
+            screen: source.screen, playerKey: source.playerKey, playerVerified: true,
+            page: nil, pageVerified: false, frameSHA256: source.frameSHA256)
+        XCTAssertFalse(plan.matchesSource(resizedImage))
+        XCTAssertThrowsError(try VerifiedInputPlan(
+            action: .openPlayerCard, targetID: "pitcher-order:save", targetLabel: "저장",
+            region: ScreenRegion(x: 0.495, y: 0.03, width: 0.2, height: 0.06),
+            profileVersion: "pitcher-order-layout-v1", source: source,
+            targetState: .playerDetailPitcher, targetPlayer: "후라도'26", targetPage: 1))
+        XCTAssertThrowsError(try VerifiedInputPlan(
+            action: .openPlayerCard, targetID: "pitcher-order:first-starter", targetLabel: "후라도'26",
+            region: ScreenRegion(x: 0.145, y: 0.600, width: 0.122, height: 0.2067),
+            profileVersion: "pitcher-order-layout-v1", source: source,
+            targetState: .playerDetailPitcher, targetPlayer: "다른 선수", targetPage: 1))
+    }
+
+    func testPostActionVerificationRequiresSamePlayerAndExpectedPage() throws {
+        let window = sampleV26Window()
+        let source = NavigationFrameEvidence(
+            window: window, imageWidth: 1600, imageHeight: 1400,
+            screen: ScreenClassification(state: .pitcherOrder, status: .verified, confidence: 1,
+                                         anchorIndices: Array(0...8)),
+            playerKey: "후라도'26", playerVerified: true, page: nil, pageVerified: false,
+            frameSHA256: String(repeating: "a", count: 64))
+        let plan = try VerifiedInputPlan(
+            action: .openPlayerCard, targetID: "pitcher-order:first-starter", targetLabel: "후라도'26",
+            region: ScreenRegion(x: 0.145, y: 0.600, width: 0.122, height: 0.2067),
+            profileVersion: "pitcher-order-layout-v1", source: source,
+            targetState: .playerDetailPitcher, targetPlayer: "후라도'26", targetPage: 1)
+        let expected = NavigationFrameEvidence(
+            window: window, imageWidth: 1600, imageHeight: 1400,
+            screen: ScreenClassification(state: .playerDetailPitcher, status: .verified, confidence: 1,
+                                         anchorIndices: Array(0...4)),
+            playerKey: "후라도'26", playerVerified: true, page: 1, pageVerified: true,
+            frameSHA256: String(repeating: "b", count: 64))
+        let wrongPlayer = NavigationFrameEvidence(
+            window: window, imageWidth: 1600, imageHeight: 1400,
+            screen: expected.screen, playerKey: "다른 선수", playerVerified: true,
+            page: 1, pageVerified: true, frameSHA256: expected.frameSHA256)
+        let wrongPage = NavigationFrameEvidence(
+            window: window, imageWidth: 1600, imageHeight: 1400,
+            screen: expected.screen, playerKey: "후라도'26", playerVerified: true,
+            page: 2, pageVerified: true, frameSHA256: expected.frameSHA256)
+
+        XCTAssertEqual(NavigationTransitionVerifier.verify(plan: plan, before: source, after: expected), .expected)
+        XCTAssertEqual(NavigationTransitionVerifier.verify(plan: plan, before: source, after: source), .unchanged)
+        XCTAssertEqual(NavigationTransitionVerifier.verify(plan: plan, before: source, after: wrongPlayer), .unexpected)
+        XCTAssertEqual(NavigationTransitionVerifier.verify(plan: plan, before: source, after: wrongPage), .unexpected)
+        XCTAssertEqual(AccountStateChangingAction.allCases.count, 12)
+    }
+
+    func testIdleGatePausesOnUserInputAndHonorsEmergencyStop() throws {
+        var gate = try UserActivityGate(minimumIdleSeconds: 5, lastInputTime: 10)
+        XCTAssertFalse(gate.isIdle(at: 14.9))
+        XCTAssertTrue(gate.isIdle(at: 15))
+        gate.noteUserInput(at: 16)
+        XCTAssertFalse(gate.isIdle(at: 20.9))
+        gate.requestEmergencyStop()
+        XCTAssertTrue(gate.emergencyStopped)
+    }
+
     func testInvalidRoiFailsClosedAndUnconfiguredScreenClassifierReturnsUnknown() throws {
         XCTAssertThrowsError(try ScreenRegion(x: 0.8, y: 0.1, width: 0.3, height: 0.2))
         XCTAssertEqual(UnknownScreenStateClassifier().classify([]), .unknown)
@@ -97,6 +225,30 @@ final class CaptureCoreTests: XCTestCase {
         XCTAssertEqual(classification.anchorIndices.count, 4)
         XCTAssertEqual(classifier.classify(Array(pitcherOrder.prefix(2))), .unknown)
         XCTAssertEqual(classifier.classify([TextObservation(text: "랭킹 챌린지", confidence: 0.8, bbox: titleBox)]), .unknown)
+    }
+
+    func testPitcherOrderUsesBothLineupColumnsAndFooterAsLayoutEvidence() throws {
+        let classifier = ObservedScreenStateClassifier()
+        func box(_ x: Double, _ y: Double, _ width: Double = 0.05, _ height: Double = 0.012) throws -> ScreenRegion {
+            try ScreenRegion(x: x, y: y, width: width, height: height)
+        }
+        let rows = [
+            TextObservation(text: "선발 투수 변경", confidence: 0.5, bbox: try box(0.4, 0.82, 0.2, 0.03)),
+            TextObservation(text: "좌측에 표시되는 내 선발 투수의 순서를 변경할 수 있습니다.", confidence: 1,
+                            bbox: try box(0.289, 0.789, 0.435, 0.016)),
+            TextObservation(text: "원래대로", confidence: 1, bbox: try box(0.245, 0.056, 0.080, 0.019)),
+            TextObservation(text: "저장", confidence: 0.5, bbox: try box(0.696, 0.056, 0.042, 0.019)),
+            TextObservation(text: "1선발 R", confidence: 1, bbox: try box(0.222, 0.737)),
+            TextObservation(text: "3선발 L", confidence: 1, bbox: try box(0.222, 0.218)),
+            TextObservation(text: "3선발 R", confidence: 1, bbox: try box(0.373, 0.735)),
+            TextObservation(text: "5선발 R", confidence: 1, bbox: try box(0.373, 0.218)),
+            TextObservation(text: "선수 교체", confidence: 0.5, bbox: try box(0.457, 0.053, 0.086, 0.021)),
+            TextObservation(text: "< 뒤로가기", confidence: 0.5, bbox: try box(0.439, 0.012, 0.114, 0.019)),
+        ]
+        let result = classifier.recognition(rows)
+        XCTAssertEqual(result.status, .verified)
+        XCTAssertEqual(result.confidence, 1)
+        XCTAssertEqual(result.anchorIndices, Array(0...9))
     }
 
     func testSharedScreenContractMatchesSwiftStateAnchorConfidenceAndVersion() throws {

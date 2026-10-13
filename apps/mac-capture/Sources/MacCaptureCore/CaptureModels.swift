@@ -2,7 +2,7 @@ import CoreGraphics
 import Foundation
 
 public enum ScreenProfileContract {
-    public static let version = "screen-profiles-v2"
+    public static let version = "screen-profiles-v3"
     public static let minimumAnchorConfidence = 0.3
     public static let verifiedConfidence = 0.85
 }
@@ -177,8 +177,12 @@ public struct WindowDescriptor: Codable, Equatable, Sendable {
     public let processName: String?
     public let processID: Int32?
     public let bundleIdentifier: String?
+    public let displayID: UInt32?
+    public let originXPoints: Double
+    public let originYPoints: Double
     public let widthPoints: Double
     public let heightPoints: Double
+    public let backingScaleFactor: Double
     public let onScreen: Bool
 }
 
