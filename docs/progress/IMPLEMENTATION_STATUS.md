@@ -2,7 +2,18 @@
 
 Updated: 2026-10-13
 
-## Current task run — 2026-10-13
+## v0.2 OCR and navigation continuation — 2026-10-13
+
+- Added schema v3 append-only `screen_observations` and `ocr_field_candidates`, local DB analysis, Korean card-label/year parsing, separated card-type/stars/enhancement/labelled-OVR candidates, field confidence/provenance, explicit panel roles, and unresolved card-instance identity.
+- The existing private DB has 4 captures and 364 OCR observations. All four match the pitcher-order multi-anchor layout as `CANDIDATE` at minimum OCR confidence 0.5. The 46 inserted field candidates have null values and `LOW_CONFIDENCE`; current real normalized players remain 0. Reanalysis was idempotent and the SQLite integrity check passed.
+- Added an explicit screen enum for all requested panels, while only the multi-anchor pitcher-order recognizer uses observed coordinates. Other screens remain `UNKNOWN`. Central panel and previews require caller-measured bounds.
+- Added state tracking that separates screen/player/page, invalidates staged fields on untracked transitions, a graph-driven navigation planner, a mock-only adapter, fail-closed safety controller, and Vision-to-window coordinate mapping. No real Accessibility/CGEvent input code exists.
+- Added a synthetic player-detail fixture that reaches a SQLite player snapshot labeled `SYNTHETIC_TEST`; this is not a real-player extraction.
+- Current fresh `capture list` found no V26 window. Prior 4-frame real capture remains historical local evidence, but no fresh live capture, accuracy ground truth, or capture/OCR timing was available.
+- Full Python suite: 53/53 passed. Standard SwiftPM build/test remain constrained by `sandbox-exec`; current core+CLI compile and `doctor` pass through the source-hash-matched direct `swiftc` fallback. XCTest runner remains `BLOCKED`.
+- Official V26 policy review did not verify authorization for the Korean service; live UI input remains blocked. See [policy review](../research/COM2US_UI_AUTOMATION_POLICY.md).
+
+## Earlier implementation stage (historical; superseded by v0.2 continuation)
 
 - Branch remains `feat/ranking-ai-foundation`; the pre-existing `WindowListResponse` JSON crash hotfix is preserved.
 - Screen Recording preflight is true. After activating the already-running V26 app, fresh ScreenCaptureKit enumeration matched a visible window by both `process_name=V26` and non-empty `title` (810×1112 pt).
@@ -10,7 +21,7 @@ Updated: 2026-10-13
 - Swift Vision JSON parses in Python. `--screen-state` is passed through; `source="vision"` maps to evidence source `UNKNOWN`, while an explicit evidence provenance is used for persistence.
 - `capture ocr --store` saved four actual captured frames (364 OCR observations total) to the ignored local SQLite database. Reprocessing one exact frame inserted 0 additional observations (91 deduplicated); all temporary PNGs were deleted after processing.
 - A single real screen anchor supports `RANKING_LOBBY`. Lineup-detail and player-detail screens were not collected and continue to classify as `UNKNOWN`.
-- Python suite: 28/28 tests passed, including a real Swift Vision → Python CLI/parser → temporary SQLite integration test.
+- Python suite at that stage: 28/28 tests passed, including a real Swift Vision → Python CLI/parser → temporary SQLite integration test. The current full suite result is 53/53 above.
 - SwiftPM `swift test` remains blocked before manifest execution by host `sandbox-exec` (`sandbox_apply: Operation not permitted`). Direct Release compilation and a classifier smoke harness are used as alternate executed checks.
 
 ## Repository and environment

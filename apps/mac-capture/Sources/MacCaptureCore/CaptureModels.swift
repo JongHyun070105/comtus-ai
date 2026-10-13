@@ -6,6 +6,7 @@ public enum ScreenState: String, Codable, CaseIterable, Sendable {
     case rankingLobby = "RANKING_LOBBY"
     case pitcherOrder = "PITCHER_ORDER"
     case opponentLineup = "OPPONENT_LINEUP"
+    case opponentStartingPitcherDetail = "OPPONENT_STARTING_PITCHER_DETAIL"
     case playerDetailBatter = "PLAYER_DETAIL_BATTER"
     case playerDetailPitcher = "PLAYER_DETAIL_PITCHER"
     case teamRoster = "TEAM_ROSTER"
@@ -13,6 +14,19 @@ public enum ScreenState: String, Codable, CaseIterable, Sendable {
     case positionTraining = "POSITION_TRAINING"
     case matchResult = "MATCH_RESULT"
     case unknown = "UNKNOWN"
+}
+
+public enum ScreenClassificationStatus: String, Codable, Equatable, Sendable {
+    case verified = "VERIFIED"
+    case candidate = "CANDIDATE"
+    case unknown = "UNKNOWN"
+}
+
+public struct ScreenClassification: Codable, Equatable, Sendable {
+    public let state: ScreenState
+    public let status: ScreenClassificationStatus
+    public let confidence: Double?
+    public let anchorIndices: [Int]
 }
 
 public enum PlayerDetailKind: String, Codable, Sendable {
@@ -110,14 +124,22 @@ public struct OCRDocument: Codable, Equatable, Sendable {
     public let schemaVersion: Int
     public let source: String
     public let screenState: ScreenState
+    public let screenStatus: ScreenClassificationStatus
+    public let screenConfidence: Double?
+    public let screenAnchorIndices: [Int]
     public let frameSize: [Int]
     public let activePanel: [Double]?
     public let observations: [TextObservation]
 
-    public init(screenState: ScreenState, frameSize: [Int], activePanel: ScreenRegion?, observations: [TextObservation]) {
+    public init(screenState: ScreenState, frameSize: [Int], activePanel: ScreenRegion?, observations: [TextObservation],
+                screenStatus: ScreenClassificationStatus = .unknown, screenConfidence: Double? = nil,
+                screenAnchorIndices: [Int] = []) {
         self.schemaVersion = 1
         self.source = "vision"
         self.screenState = screenState
+        self.screenStatus = screenStatus
+        self.screenConfidence = screenConfidence
+        self.screenAnchorIndices = screenAnchorIndices
         self.frameSize = frameSize
         self.activePanel = activePanel.map { [$0.x, $0.y, $0.width, $0.height] }
         self.observations = observations

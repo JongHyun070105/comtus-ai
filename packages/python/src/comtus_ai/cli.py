@@ -10,14 +10,17 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+import tempfile
 from typing import Any
 
 from . import __version__
 from .database import SQLiteStore
 from .database.store import default_database_path
 from .models import EvidenceSource
-from .observations import load_ocr_document
+from .observations import OCRObservation, load_ocr_document
 from .optimizer import Opponent, Pitcher, optimize_rotation
+from .parsing import parse_ocr_fields
+from .screens import NormalizedRect, recognize_screen
 
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
@@ -36,9 +39,9 @@ def _database(path: Path = DATABASE_PATH) -> SQLiteStore:
 
 
 def _run_swift(arguments: list[str]) -> int:
-    command = _swift_command(arguments)
+    command = _prepare_swift_command(arguments)
     if command is None:
-        print("BLOCKED: Swift toolchain was not found.", file=sys.stderr)
+        print("BLOCKED: no source-matched Swift CLI binary could be built.", file=sys.stderr)
         return 2
     result = subprocess.run(command, cwd=REPO_ROOT, env=_swift_environment(command), check=False)
     return result.returncode
@@ -59,9 +62,9 @@ def _run_swift_ocr(args: argparse.Namespace) -> int:
     if not args.store:
         return _run_swift(command)
 
-    swift_command = _swift_command(command)
+    swift_command = _prepare_swift_command(command)
     if swift_command is None:
-        print("BLOCKED: Swift toolchain was not found.", file=sys.stderr)
+        print("BLOCKED: no source-matched Swift CLI binary could be built.", file=sys.stderr)
         return 2
     result = subprocess.run(swift_command, cwd=REPO_ROOT, env=_swift_environment(swift_command),
                             check=False, capture_output=True, text=True)
@@ -91,6 +94,48 @@ def _run_swift_ocr(args: argparse.Namespace) -> int:
             )
             observation_ids.append(observation_id)
             inserted_count += int(inserted)
+        classification = recognize_screen(observations)
+        document["screen_state"] = classification.state.value
+        document["screen_status"] = classification.status.value
+        document["screen_confidence"] = classification.confidence
+        document["screen_anchor_indices"] = list(classification.anchor_indices)
+        screen_id, screen_inserted = store.save_screen_observation(
+            evidence_id=evidence_id, screen_state=classification.state.value,
+            status=classification.status.value, confidence=classification.confidence,
+            profile_version=classification.profile_version,
+            anchor_indices=list(classification.anchor_indices),
+            panel_layout=(
+                {"active": document.get("active_panel"), "left_preview": None, "right_preview": None}
+                if document.get("active_panel") is not None else None
+            ),
+        )
+        active_panel_value = document.get("active_panel")
+        active_panel = NormalizedRect(*active_panel_value) if active_panel_value else None
+        field_candidates = parse_ocr_fields(observations, active_panel=active_panel)
+        field_candidate_ids: list[int] = []
+        field_candidates_inserted = 0
+        for candidate in field_candidates:
+            if not candidate.observation_indices:
+                continue
+            primary = candidate.observation_indices[0]
+            if primary >= len(observation_ids):
+                continue
+            context = candidate.context_dict()
+            context.update({
+                "screen_observation_id": screen_id,
+                "screen_state": classification.state.value,
+                "screen_status": classification.status.value,
+                "player_identity": "UNRESOLVED",
+                "page_identity": "UNRESOLVED",
+                "player_snapshot_eligible": False,
+            })
+            candidate_id, candidate_inserted = store.save_ocr_field_candidate(
+                observation_id=observation_ids[primary], field_key=candidate.field_key, value=candidate.value,
+                status=candidate.status.value, confidence=candidate.confidence, source_type=candidate.source,
+                derivation_version=candidate.derivation_version, context=context,
+            )
+            field_candidate_ids.append(candidate_id)
+            field_candidates_inserted += int(candidate_inserted)
     document["persistence"] = {
         "status": "EXEC_PASS",
         "capture_evidence_id": evidence_id,
@@ -98,34 +143,251 @@ def _run_swift_ocr(args: argparse.Namespace) -> int:
         "observation_ids": observation_ids,
         "observations_inserted": inserted_count,
         "observations_duplicated": len(observations) - inserted_count,
+        "screen_observation_id": screen_id,
+        "screen_observation_inserted": screen_inserted,
+        "screen_state": classification.state.value,
+        "screen_state_status": classification.status.value,
+        "field_candidate_ids": field_candidate_ids,
+        "field_candidates_inserted": field_candidates_inserted,
+        "player_snapshots_created": 0,
         "source": args.evidence_source,
     }
     _print_json(document)
     return 0
 
 
-def _swift_command(arguments: list[str]) -> list[str] | None:
+def _analyze_saved_ocr(database: Path) -> int:
+    """Append versioned parser and screen-state evidence without emitting OCR text."""
+    evidence_count = 0
+    observation_count = 0
+    screen_inserted = 0
+    field_inserted = 0
+    field_totals: dict[str, dict[str, int]] = {}
+    screen_totals: dict[str, int] = {}
+    with _database(database) as store:
+        evidence_rows = store.connection.execute("SELECT id FROM capture_evidence ORDER BY id").fetchall()
+        evidence_count = len(evidence_rows)
+        for evidence in evidence_rows:
+            evidence_id = int(evidence["id"])
+            rows = store.connection.execute(
+                "SELECT id,text,confidence,bbox_json,source_type,schema_version,field FROM ocr_observations WHERE evidence_id=? ORDER BY id",
+                (evidence_id,),
+            ).fetchall()
+            observation_count += len(rows)
+            observations = tuple(
+                OCRObservation(
+                    text=row["text"], confidence=row["confidence"],
+                    bbox=tuple(json.loads(row["bbox_json"])),
+                    source=EvidenceSource(row["source_type"]), schema_version=int(row["schema_version"]),
+                    field=row["field"],
+                )
+                for row in rows
+            )
+            classification = recognize_screen(observations)
+            _, inserted = store.save_screen_observation(
+                evidence_id=evidence_id, screen_state=classification.state.value,
+                status=classification.status.value, confidence=classification.confidence,
+                profile_version=classification.profile_version,
+                anchor_indices=list(classification.anchor_indices), panel_layout=None,
+            )
+            screen_inserted += int(inserted)
+            screen_key = f"{classification.state.value}:{classification.status.value}"
+            screen_totals[screen_key] = screen_totals.get(screen_key, 0) + 1
+
+            by_field_ids: dict[int, int] = {}
+            for row in rows:
+                by_field_ids[int(row["id"])] = int(row["id"])
+            for candidate in parse_ocr_fields(observations):
+                if not candidate.observation_indices:
+                    continue
+                primary_index = candidate.observation_indices[0]
+                if primary_index >= len(rows):
+                    continue
+                observation_id = by_field_ids[int(rows[primary_index]["id"])]
+                context = candidate.context_dict()
+                context.update({
+                    "screen_state": classification.state.value,
+                    "screen_status": classification.status.value,
+                    "screen_profile_version": classification.profile_version,
+                    "player_identity": "UNRESOLVED",
+                    "page_identity": "UNRESOLVED",
+                    "player_snapshot_eligible": False,
+                })
+                _, inserted = store.save_ocr_field_candidate(
+                    observation_id=observation_id, field_key=candidate.field_key, value=candidate.value,
+                    status=candidate.status.value, confidence=candidate.confidence, source_type=candidate.source,
+                    derivation_version=candidate.derivation_version, context=context,
+                )
+                field_inserted += int(inserted)
+                field_key = f"{candidate.field_key}:{candidate.status.value}"
+                field_totals[field_key] = field_totals.get(field_key, 0) + 1
+
+    _print_json({
+        "status": "EXEC_PASS",
+        "database": str(database),
+        "evidence_frames_analyzed": evidence_count,
+        "ocr_observations_analyzed": observation_count,
+        "screen_classifications_inserted": screen_inserted,
+        "screen_classifications_by_state": screen_totals,
+        "field_candidates_inserted": field_inserted,
+        "field_candidates_by_key_and_status": field_totals,
+        "player_snapshots_created": 0,
+        "raw_ocr_text_emitted": False,
+        "note": "Player/card identity and page context remain unresolved unless separately verified.",
+    })
+    return 0
+
+
+def _swift_source_digest() -> str:
     package = REPO_ROOT / "apps" / "mac-capture"
+    files = [package / "Package.swift", *sorted((package / "Sources").rglob("*.swift"))]
+    digest = hashlib.sha256()
+    for path in files:
+        digest.update(path.relative_to(package).as_posix().encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(path.read_bytes())
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def _swift_manifest_path(binary: Path) -> Path:
+    return binary.with_name(binary.name + ".build.json")
+
+
+def _valid_swift_binary(binary: Path, source_digest: str) -> bool:
+    manifest_path = _swift_manifest_path(binary)
+    if not binary.is_file() or not manifest_path.is_file():
+        return False
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        return (manifest.get("source_sha256") == source_digest
+                and manifest.get("binary_sha256") == hashlib.sha256(binary.read_bytes()).hexdigest())
+    except (OSError, json.JSONDecodeError, TypeError):
+        return False
+
+
+def _write_swift_manifest(binary: Path, source_digest: str, mode: str) -> None:
+    version = subprocess.run(["swiftc", "--version"], check=False, capture_output=True, text=True).stdout.strip()
+    manifest = {
+        "schema_version": 1,
+        "source_sha256": source_digest,
+        "binary_sha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
+        "compiler": version,
+        "build_mode": mode,
+    }
+    destination = _swift_manifest_path(binary)
+    temporary = destination.with_suffix(destination.suffix + ".tmp")
+    temporary.write_text(json.dumps(manifest, sort_keys=True) + "\n", encoding="utf-8")
+    temporary.replace(destination)
+
+
+def _swift_binary_candidates(source_digest: str) -> list[Path]:
+    package = REPO_ROOT / "apps" / "mac-capture"
+    roots = (package / ".build" / "swiftpm", package / ".build" / "manual-localfix")
+    binaries: list[Path] = []
+    for root in roots:
+        if not root.is_dir():
+            continue
+        for child in root.iterdir():
+            if not child.is_dir() or not child.name.startswith(source_digest):
+                continue
+            binaries.extend((child / "arm64-apple-macosx" / "release" / "mac-capture",
+                             child / "x86_64-apple-macosx" / "release" / "mac-capture",
+                             child / "release" / "mac-capture", child / "mac-capture"))
     configured_binary = os.environ.get("COMTUS_AI_SWIFT_BIN")
     if configured_binary:
-        binary = Path(configured_binary).expanduser()
-        return [str(binary), *arguments] if binary.is_file() else None
-    binaries = (
-        package / ".build" / "release" / "mac-capture",
-        package / ".build" / "arm64-apple-macosx" / "release" / "mac-capture",
-        package / ".build" / "manual-release" / "mac-capture",
-        package / ".build" / "out" / "Products" / "Release" / "mac-capture",
-        package / ".build" / "manual" / "mac-capture",
+        binaries.insert(0, Path(configured_binary).expanduser())
+    return [binary for binary in binaries if _valid_swift_binary(binary, source_digest)]
+
+
+def _fresh_build_directory(parent: Path, source_digest: str) -> Path:
+    parent.mkdir(parents=True, exist_ok=True)
+    return Path(tempfile.mkdtemp(prefix=source_digest + "-", dir=parent))
+
+
+def _find_built_swift_cli(build_root: Path) -> Path | None:
+    package = REPO_ROOT / "apps" / "mac-capture"
+    candidates = (
+        build_root / "arm64-apple-macosx" / "release" / "mac-capture",
+        build_root / "x86_64-apple-macosx" / "release" / "mac-capture",
+        build_root / "release" / "mac-capture",
     )
-    source_files = tuple((package / "Sources").rglob("*.swift"))
-    newest_source = max((source.stat().st_mtime_ns for source in source_files), default=0)
-    available = [binary for binary in binaries if binary.is_file() and binary.stat().st_mtime_ns >= newest_source]
-    if available:
-        binary = max(available, key=lambda candidate: candidate.stat().st_mtime_ns)
-        return [str(binary), *arguments]
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _compile_swift_direct(build_root: Path) -> Path | None:
+    if platform.system() != "Darwin" or shutil.which("swiftc") is None:
+        return None
+    package = REPO_ROOT / "apps" / "mac-capture"
+    sources = sorted((package / "Sources" / "MacCaptureCore").glob("*.swift"))
+    cli = package / "Sources" / "MacCaptureCLI" / "main.swift"
+    if not sources or not cli.is_file():
+        return None
+    build_root.mkdir(parents=True, exist_ok=True)
+    library = build_root / "libMacCaptureCore.dylib"
+    module = build_root / "MacCaptureCore.swiftmodule"
+    binary = build_root / "mac-capture"
+    frameworks = ["-framework", "AppKit", "-framework", "CoreGraphics", "-framework", "ScreenCaptureKit", "-framework", "Vision"]
+    library_command = ["swiftc", "-O", "-whole-module-optimization", "-emit-library", "-emit-module",
+                      "-module-name", "MacCaptureCore", "-emit-module-path", str(module),
+                      *map(str, sources), *frameworks, "-o", str(library)]
+    library_result = subprocess.run(library_command, cwd=REPO_ROOT, check=False, capture_output=True, text=True)
+    if library_result.returncode != 0:
+        print(library_result.stderr or library_result.stdout, file=sys.stderr)
+        return None
+    cli_command = ["swiftc", "-O", "-parse-as-library", "-I", str(build_root), "-L", str(build_root),
+                   "-lMacCaptureCore", "-Xlinker", "-rpath", "-Xlinker", "@executable_path",
+                   *frameworks, "-o", str(binary), str(cli)]
+    cli_result = subprocess.run(cli_command, cwd=REPO_ROOT, check=False, capture_output=True, text=True)
+    if cli_result.returncode != 0:
+        print(cli_result.stderr or cli_result.stdout, file=sys.stderr)
+        return None
+    return binary
+
+
+def _ensure_swift_binary() -> Path | None:
+    package = REPO_ROOT / "apps" / "mac-capture"
+    source_digest = _swift_source_digest()
+    candidates = _swift_binary_candidates(source_digest)
+    if candidates:
+        return candidates[0]
     if shutil.which("swift") is None:
         return None
-    return ["swift", "run", "--package-path", str(package), "mac-capture", *arguments]
+
+    swiftpm_root = _fresh_build_directory(package / ".build" / "swiftpm", source_digest)
+    swiftpm = subprocess.run(
+        ["swift", "build", "--package-path", str(package), "--build-path", str(swiftpm_root), "-c", "release"],
+        cwd=REPO_ROOT, check=False, capture_output=True, text=True,
+    )
+    if swiftpm.returncode == 0:
+        binary = _find_built_swift_cli(swiftpm_root)
+        if binary:
+            _write_swift_manifest(binary, source_digest, "swiftpm")
+            return binary
+    if swiftpm.stderr:
+        print("SwiftPM build unavailable; trying the source-matched direct compiler fallback.", file=sys.stderr)
+        print(swiftpm.stderr.strip(), file=sys.stderr)
+
+    manual_root = _fresh_build_directory(package / ".build" / "manual-localfix", source_digest)
+    binary = _compile_swift_direct(manual_root)
+    if binary:
+        _write_swift_manifest(binary, source_digest, "swiftc-direct")
+        return binary
+    return None
+
+
+def _swift_command(arguments: list[str]) -> list[str] | None:
+    source_digest = _swift_source_digest()
+    candidates = _swift_binary_candidates(source_digest)
+    return [str(candidates[0]), *arguments] if candidates else None
+
+
+def _prepare_swift_command(arguments: list[str]) -> list[str] | None:
+    binary = _ensure_swift_binary()
+    return [str(binary), *arguments] if binary else None
 
 
 def _optimize_file(path: Path) -> dict[str, object]:
@@ -215,6 +477,8 @@ def build_parser() -> argparse.ArgumentParser:
     db = sub.add_parser("db", help="Manage the local SQLite database").add_subparsers(dest="db_command", required=True)
     db.add_parser("init", help="Initialize or migrate the local schema")
     db.add_parser("seed-reference", help="Store the clearly labeled user-provided Samsung reference snapshot")
+    analyze_ocr = db.add_parser("analyze-ocr", help="Analyze saved local OCR evidence without printing OCR text")
+    analyze_ocr.add_argument("--database", type=Path, default=DATABASE_PATH)
     capture = sub.add_parser("capture", help="Read-only macOS window and OCR operations").add_subparsers(dest="capture_command", required=True)
     capture.add_parser("list", help="List candidate windows when capture permission is available")
     once = capture.add_parser("once", help="Capture one frame from a selected window")
@@ -223,7 +487,7 @@ def build_parser() -> argparse.ArgumentParser:
     ocr = capture.add_parser("ocr", help="Run Vision OCR on a local image")
     ocr.add_argument("image", type=Path)
     ocr.add_argument("--active-panel", nargs=4, type=float, metavar=("X", "Y", "W", "H"), help="Normalized active-panel ROI")
-    ocr.add_argument("--screen-state", choices=("HOME", "RANKING_LOBBY", "PITCHER_ORDER", "OPPONENT_LINEUP", "PLAYER_DETAIL_BATTER", "PLAYER_DETAIL_PITCHER", "TEAM_ROSTER", "SYNERGY", "POSITION_TRAINING", "MATCH_RESULT", "UNKNOWN"), default="UNKNOWN")
+    ocr.add_argument("--screen-state", choices=("HOME", "RANKING_LOBBY", "PITCHER_ORDER", "OPPONENT_LINEUP", "OPPONENT_STARTING_PITCHER_DETAIL", "PLAYER_DETAIL_BATTER", "PLAYER_DETAIL_PITCHER", "TEAM_ROSTER", "SYNERGY", "POSITION_TRAINING", "MATCH_RESULT", "UNKNOWN"), default="UNKNOWN")
     ocr.add_argument("--store", action="store_true", help="Store capture hash and OCR observations in SQLite")
     ocr.add_argument("--evidence-source", choices=tuple(source.value for source in EvidenceSource), default=EvidenceSource.UNKNOWN.value,
                      help="Provenance label for a stored capture; defaults to UNKNOWN")
@@ -249,7 +513,7 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         if args.command == "doctor":
-            swift_args = _swift_command(["doctor"])
+            swift_args = _prepare_swift_command(["doctor"])
             swift_status: dict[str, object] = {"available": swift_args is not None, "capture_permission": "NOT_CHECKED"}
             if swift_args:
                 environment = _swift_environment(swift_args)
@@ -268,6 +532,8 @@ def main(argv: list[str] | None = None) -> int:
             with _database() as store:
                 _print_json({"status": "EXEC_PASS", "schema_version": store.schema_version(), "path": str(DATABASE_PATH), "counts": store.counts()})
             return 0
+        if args.command == "db" and args.db_command == "analyze-ocr":
+            return _analyze_saved_ocr(args.database)
         if args.command == "db" and args.db_command == "seed-reference":
             snapshot_id, inserted = _seed_reference()
             _print_json({"status": "EXEC_PASS", "snapshot_id": snapshot_id, "inserted": inserted, "source": "USER_PROVIDED_REFERENCE", "screenshots_verified": False})

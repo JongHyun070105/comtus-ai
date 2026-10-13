@@ -36,14 +36,27 @@ final class CaptureCoreTests: XCTestCase {
         XCTAssertEqual(UnknownScreenStateClassifier().classify([]), .unknown)
     }
 
-    func testObservedScreenClassifierUsesOnlyTheCapturedRankingChallengeTitleAnchor() {
+    func testObservedScreenClassifierRequiresMultipleAnchorsAndScreenPlacement() throws {
         let classifier = ObservedScreenStateClassifier()
         let titleBox = try! ScreenRegion(x: 0.433, y: 0.932, width: 0.098, height: 0.018)
-        let offscreenTitleBox = try! ScreenRegion(x: 0.433, y: 0.5, width: 0.098, height: 0.018)
-        XCTAssertEqual(classifier.classify([TextObservation(text: "랭킹 챌린지", confidence: 1, bbox: titleBox)]), .rankingLobby)
-        XCTAssertEqual(classifier.classify([TextObservation(text: "라인업", confidence: 1, bbox: titleBox)]), .unknown)
+        XCTAssertEqual(classifier.classify([TextObservation(text: "랭킹 챌린지", confidence: 1, bbox: titleBox)]), .unknown)
+        let pitcherOrder = [
+            TextObservation(text: "{ 선발 투수 변경", confidence: 0.5,
+                            bbox: try! ScreenRegion(x: 0.365, y: 0.825, width: 0.244, height: 0.028)),
+            TextObservation(text: "좌측에 표시되는 내 선발 투수의 순서를 변경할 수 있습니다.", confidence: 1,
+                            bbox: try! ScreenRegion(x: 0.289, y: 0.789, width: 0.435, height: 0.016)),
+            TextObservation(text: "원래대로", confidence: 1,
+                            bbox: try! ScreenRegion(x: 0.245, y: 0.056, width: 0.080, height: 0.019)),
+            TextObservation(text: "저장", confidence: 0.5,
+                            bbox: try! ScreenRegion(x: 0.696, y: 0.056, width: 0.042, height: 0.019)),
+        ]
+        XCTAssertEqual(classifier.classify(pitcherOrder), .pitcherOrder)
+        let classification = classifier.recognition(pitcherOrder)
+        XCTAssertEqual(classification.status, .candidate)
+        XCTAssertEqual(classification.confidence, 0.5)
+        XCTAssertEqual(classification.anchorIndices.count, 4)
+        XCTAssertEqual(classifier.classify(Array(pitcherOrder.prefix(2))), .unknown)
         XCTAssertEqual(classifier.classify([TextObservation(text: "랭킹 챌린지", confidence: 0.8, bbox: titleBox)]), .unknown)
-        XCTAssertEqual(classifier.classify([TextObservation(text: "랭킹 챌린지", confidence: 1, bbox: offscreenTitleBox)]), .unknown)
     }
 
     func testLatencyProfilerReportsTailPercentilesAndMissedFrames() async {
@@ -89,6 +102,7 @@ final class CaptureCoreTests: XCTestCase {
         XCTAssertEqual(document.schemaVersion, 1)
         XCTAssertEqual(document.frameSize, [width, height])
         XCTAssertEqual(try processor.process(image, activePanel: .fullFrame, state: .rankingLobby).screenState, .unknown)
+        XCTAssertEqual(document.screenStatus, .unknown)
         XCTAssertFalse(document.observations.isEmpty)
         XCTAssertTrue(document.observations.allSatisfy { observation in
             observation.schemaVersion == 1 && observation.source == "vision" && observation.confidence >= 0 && observation.confidence <= 1

@@ -1,18 +1,20 @@
 # comtus-ai
 
-컴투스프로야구V26 랭킹챌린지를 위한 **로컬 전용·읽기 전용 전력 분석 기반**입니다. 현재 버전은 캡처/OCR 파이프라인의 첫 구현과 SQLite 증거 저장, 명시적으로 제공된 휴리스틱 점수로 5선발 순서를 비교하는 분석 도구입니다. 보정된 승률 예측기나 자동 게임 조작 기능은 포함하지 않습니다.
+컴투스프로야구V26 랭킹챌린지를 위한 **로컬 전용·읽기 전용 전력 분석 기반**입니다. 캡처/OCR 관측, 근거가 연결된 필드 후보, 안전한 모의 탐색을 제공합니다. 선수 데이터는 화면·선수·페이지 식별을 검증하기 전까지 선수 스냅샷으로 승격하지 않습니다. 보정된 승률 예측기나 실제 게임 입력 기능은 포함하지 않습니다.
 
 ## 현재 구현
 
-- Python 3 패키지: 카드·계정 모델, 버전 관리 SQLite 스키마, 불변 스냅샷 및 OCR 정정 이력
+- Python 3 패키지: 카드·계정 모델, 버전 관리 SQLite 스키마, 불변 스냅샷, OCR 필드 후보 및 정정 이력
 - JSON v1: OCR 관측과 휴리스틱 매치업 입력/출력
 - 랭킹챌린지 최적화: 다섯 투수와 다섯 상대의 120개 일대일 배치를 모두 비교하고 동률·누락 점수를 보고
 - 규칙 계산 기반: 모드·카드 종류·기준점·대상·출처·버전을 보존하며 기존 표시 능력치에 포함됐는지 모르면 보너스를 재적용하지 않음
-- Swift Package: ScreenCaptureKit 창 탐색/단일 프레임 캡처, Vision 한국어/영어 OCR, 명시적 활성 패널 ROI
-- 합성 캡처에서 Python OCR→SQLite→최적화→JSON 보고서까지 실행하는 테스트
+- Swift Package: ScreenCaptureKit 창 탐색/단일 프레임 캡처, Vision 한국어/영어 OCR, 명시적 활성 패널 ROI, 다중 앵커 선발 순서 화면 분류
+- OCR 필드는 토큰별 신뢰도·출처·좌표·패널 후보를 유지합니다. 같은 이름의 카드 후보는 자동으로 합치지 않고, 계정 소유 카드 인스턴스 키는 추측하지 않습니다.
+- 모의 화면 전환 플래너, 상태/선수/페이지 추적기, 중지·일시정지·깊이·재시도 안전 제어와 좌표 변환 테스트
+- 합성 fixture에서 OCR 후보→SQLite 정규화→합성 선수 스냅샷까지 실행하는 테스트
 - 삼성 라이온즈 참고 스냅샷: 사용자 설명에서 온 OVR 86.6, 세트덱 121, 특훈 총레벨 99/+0.7 및 선수 이름만 보존. 원본 스크린샷 OCR 자료가 아닙니다.
 
-화면 분류기는 실제 화면 어휘/표본을 검증하기 전까지 `UNKNOWN`을 반환합니다. 현재 실제 게임 이미지, 상대 데이터, 경기 결과, 학습 데이터는 확인되지 않았습니다. 세부 규칙과 구현 경계는 [아키텍처 문서](docs/architecture/FOUNDATION.md)를 참고하십시오.
+현재 로컬 DB에는 이전 ScreenCaptureKit 실행에서 저장된 실제 캡처 4건과 OCR 364건이 있습니다. 이번 구조 분석에서 4건 모두 선발 투수 순서 변경 화면의 다중 앵커와 일치했지만, OCR 신뢰도와 화면 이미지 부재 때문에 `CANDIDATE`로 남았습니다. 이름·연도 11건, OVR 후보 20건, 강화 후보 4건은 모두 낮은 OCR 신뢰도로 값이 비어 있으며, 선수 마스터/인스턴스/스냅샷은 0건입니다. 현재 새 V26 창은 발견되지 않았고, 한국어 선수·능력치 정확도는 평가할 근거 이미지가 없어 `NOT_VERIFIABLE`입니다. 다른 화면은 계속 `UNKNOWN`입니다. 세부 경계는 [아키텍처 문서](docs/architecture/FOUNDATION.md)를 참고하십시오.
 
 ## 요구 환경
 
@@ -104,20 +106,24 @@ comtus-ai capture once --window-id 123 --output data/captures/frame.png
 comtus-ai capture ocr data/captures/frame.png --screen-state UNKNOWN
 comtus-ai capture ocr data/captures/frame.png --screen-state PLAYER_DETAIL_BATTER --active-panel 0.2 0.1 0.6 0.8
 comtus-ai capture ocr data/captures/frame.png --screen-state UNKNOWN --store --evidence-source SCREEN_CAPTURE_VERIFIED
+comtus-ai db analyze-ocr
 ```
 
 캡처는 ScreenCaptureKit만 사용합니다. 권한을 자동으로 요청하거나 우회하지 않습니다. `doctor`, `capture list`, `capture once`는 시스템 설정의 사전 권한 상태를 확인하고 권한이 없으면 `SKIP`으로 끝납니다. `capture ocr`는 로컬 이미지에 Vision을 실행하므로 Screen Recording 권한이 필요하지 않습니다.
 
-`--store`는 이미지 SHA-256과 파싱된 OCR 관측을 SQLite에 추가하고 같은 입력의 재실행을 중복 제거합니다. 저장 출처는 기본 `UNKNOWN`입니다. `SCREEN_CAPTURE_VERIFIED`는 이 CLI의 ScreenCaptureKit 캡처로 생성한 이미지에만 지정하십시오. `--database`로 통합 테스트용 별도 DB를 지정할 수 있습니다. Swift 실행 파일은 최신 Release 산출물을 탐색하며, 다른 빌드 위치를 써야 하면 `COMTUS_AI_SWIFT_BIN=/path/to/mac-capture`로 지정할 수 있습니다.
+`--store`는 이미지 SHA-256, OCR 관측, 다중 앵커 화면 분류, 버전이 붙은 필드 후보를 SQLite에 추가하고 같은 입력을 중복 제거합니다. 저장 출처는 기본 `UNKNOWN`입니다. `SCREEN_CAPTURE_VERIFIED`는 이 CLI의 ScreenCaptureKit 캡처로 생성한 이미지에만 지정하십시오. `db analyze-ocr`는 기존 로컬 OCR 행을 분석하고 요약만 출력합니다. 원문 OCR 텍스트는 JSON 출력에 포함하지 않습니다. DB는 schema v3으로 append-only 마이그레이션합니다. `--database`로 별도 DB를 지정할 수 있습니다.
 
-상세 화면 가장자리에는 이웃 페이지가 보일 수 있습니다. 상세 화면 OCR 전에 실제 화면에 맞는 `--active-panel x y width height`를 전달하십시오. 값은 프레임 기준 정규화 좌표이며 원점은 좌측 아래입니다. 현재 자동 분류기는 실제 캡처에서 확인한 상단 `랭킹 챌린지` 제목 앵커만 `RANKING_LOBBY`로 인식합니다. `--screen-state`로 요청한 값도 OCR 근거와 일치하지 않으면 `UNKNOWN`으로 낮춥니다. 라인업 상세와 선수 상세 프로필은 검증된 실제 표본이 없어 `UNKNOWN`으로 남습니다. `frame_size`, 관측 텍스트, 신뢰도, 프레임 기준 bbox, 스키마 버전이 JSON으로 출력됩니다. 원본 이미지는 기본적으로 Git에 추가하지 않습니다.
+Swift 실행은 먼저 현재 소스 해시별 격리 경로에 표준 SwiftPM Release 빌드를 시도합니다. 호스트가 manifest 실행을 막으면 재현 가능한 직접 `swiftc` 대체 경로를 사용합니다. 바이너리와 인접 매니페스트의 소스 SHA-256·실행 파일 SHA-256이 모두 현재 소스와 일치해야 실행됩니다. `COMTUS_AI_SWIFT_BIN` 경로도 같은 매니페스트 검증을 거칩니다. 라이브러리 경로는 해당 바이너리 디렉터리의 동적 라이브러리에서 설정합니다.
+
+상세 화면 가장자리에는 이웃 페이지가 보일 수 있습니다. OCR 전에 실제 화면에서 확인한 `--active-panel x y width height`를 전달하십시오. 값은 프레임 기준 정규화 좌표이며 원점은 좌측 아래입니다. 기본 패널 경계는 추측하지 않습니다. 현재 로컬 표본으로는 선발 순서 변경 화면만 제목, 설명, 원래대로, 저장의 네 앵커를 모두 확인할 수 있습니다. 낮은 OCR 점수의 화면은 `CANDIDATE`이고 탐색 안전 제어에는 사용할 수 없습니다. 랭킹 로비, 라인업, 선수 상세, 시너지, 특훈의 자체 화면 표본은 아직 검증되지 않아 `UNKNOWN`입니다.
 
 ## 데이터와 검증 상태
 
 - SQLite 외래키를 활성화하고 schema migration 버전을 저장합니다.
-- 팀/선수 상태와 OCR 원본 관측은 append-only이며, OCR 교정은 별도 이력으로 추가합니다.
+- 팀/선수 상태, OCR 원본 관측, 화면 판정과 필드 추출 후보는 append-only이며, OCR 교정은 별도 이력으로 추가합니다.
 - 반복 입력은 콘텐츠 fingerprint, 캡처 SHA-256, 관측 dedupe key로 중복을 막습니다.
 - 계정, 카드 마스터, 육성 카드 인스턴스, 당시 선수/팀 스냅샷을 분리합니다.
+- 실제 전체 화면과 최소 영역 fixture는 Git 무시 대상인 `data/captures/` 및 `data/private-fixtures/`에만 보관하십시오. 자동 삭제는 없습니다. 보존 기간은 사용자가 별도로 정하고, 공개 테스트에는 `SYNTHETIC_TEST` fixture만 둡니다.
 - `USER_PROVIDED_REFERENCE`, `SCREEN_CAPTURE_VERIFIED`, `OFFICIAL_RULE`, `COMMUNITY_RESEARCH`, `SYNTHETIC_TEST`, `UNKNOWN` 출처를 구분합니다.
 - 현재 실전 경기 결과가 없으면 보고서는 `NO_REAL_MATCH_RESULTS`를 표시합니다. 합성 테스트 결과는 학습 데이터가 아닙니다.
 
@@ -137,10 +143,12 @@ comtus-ai capture ocr data/captures/frame.png --screen-state UNKNOWN --store --e
 
 ## 제한과 로드맵
 
-- 실제 게임 화면 수집/OCR 정확도/화면 분류/창 후보는 검증 대기 상태입니다.
+- 기존 4개 실제 프레임의 캡처/OCR 적재는 `EXEC PASS`; 현재 UI 상태 재확인 및 한국어 선수·능력치 정확도는 `SKIP / NOT_VERIFIABLE`입니다.
+- 선발 순서 화면의 다중 앵커 판정은 실행됐으나 `CANDIDATE`입니다. 다른 화면 분류와 active-panel 좌표는 `UNKNOWN / SKIP`입니다.
+- 실제 게임 입력은 Com2uS의 한국 사용자용 적용 약관에서 허용 범위를 확인하지 못해 `BLOCKED`입니다. 탐색은 합성 모의 어댑터에서만 실행합니다.
 - 시너지/특훈 수치와 모드 규칙은 UI·공식 출처가 확인된 데이터만 사용할 수 있습니다. 초기 참고 화면 설명은 출처와 버전 미확인인 참고 규칙입니다.
 - 승률, 득실점 또는 80% 목표에 대한 모델 성능 주장은 없습니다. 평가 함수는 라벨된 경기 결과가 모일 때만 계산합니다.
-- 다음 단계: macOS 캡처 권한을 사용자가 허용한 뒤 창 탐색/ROI/실제 UI 확인, 연구 출처를 분류해 규칙 등록, 데이터가 확보되면 경기 스냅샷과 오프라인 검증을 확장합니다.
+- 다음 단계: 읽기 전용 캡처로 타자/투수 상세와 양쪽 미리보기를 따로 수집하고 active-panel 경계를 검증합니다. Com2uS가 해당 계정·지역·게임의 자동 UI 입력을 명시적으로 허용하지 않는 한 실제 입력 어댑터는 추가하지 않습니다.
 - 경기 시작/선수 교체/재화 사용 자동화, 프로세스 주입, 메모리 조작, 네트워크 변조는 구현하지 않습니다.
 
 ## English summary

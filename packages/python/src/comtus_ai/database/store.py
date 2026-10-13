@@ -10,7 +10,7 @@ from ..fingerprint import canonical_json, fingerprint
 from ..models import EvidenceSource, validate_confidence
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 INITIAL_SCHEMA = r"""
 CREATE TABLE accounts (
@@ -296,6 +296,33 @@ CREATE TABLE ocr_corrections (
     corrected_by TEXT,
     created_at TEXT NOT NULL
 );
+CREATE TABLE screen_observations (
+    id INTEGER PRIMARY KEY,
+    evidence_id INTEGER NOT NULL REFERENCES capture_evidence(id) ON DELETE RESTRICT,
+    screen_state TEXT NOT NULL CHECK (screen_state IN ('RANKING_LOBBY','PITCHER_ORDER','OPPONENT_LINEUP','OPPONENT_STARTING_PITCHER_DETAIL','PLAYER_DETAIL_BATTER','PLAYER_DETAIL_PITCHER','TEAM_ROSTER','SYNERGY','POSITION_TRAINING','UNKNOWN')),
+    status TEXT NOT NULL CHECK (status IN ('VERIFIED','CANDIDATE','UNKNOWN')),
+    confidence REAL CHECK (confidence IS NULL OR (confidence BETWEEN 0 AND 1)),
+    profile_version TEXT NOT NULL,
+    anchor_indices_json TEXT NOT NULL,
+    panel_layout_json TEXT,
+    dedupe_key TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL,
+    UNIQUE(evidence_id, profile_version)
+);
+CREATE TABLE ocr_field_candidates (
+    id INTEGER PRIMARY KEY,
+    observation_id INTEGER NOT NULL REFERENCES ocr_observations(id) ON DELETE RESTRICT,
+    field_key TEXT NOT NULL,
+    value_json TEXT,
+    status TEXT NOT NULL CHECK (status IN ('CANDIDATE','LOW_CONFIDENCE','AMBIGUOUS','UNKNOWN')),
+    confidence REAL CHECK (confidence IS NULL OR (confidence BETWEEN 0 AND 1)),
+    source_type TEXT NOT NULL CHECK (source_type IN ('SCREEN_CAPTURE_VERIFIED','USER_PROVIDED_REFERENCE','MANUAL_TRANSCRIPTION','COMMUNITY_RESEARCH','OFFICIAL_RULE','SYNTHETIC_TEST','UNKNOWN')),
+    derivation_version TEXT NOT NULL,
+    context_json TEXT NOT NULL,
+    dedupe_key TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL,
+    UNIQUE(observation_id, field_key, derivation_version, dedupe_key)
+);
 CREATE TABLE match_result_evidence (
     match_result_id INTEGER NOT NULL REFERENCES match_results(id) ON DELETE RESTRICT,
     evidence_id INTEGER NOT NULL REFERENCES capture_evidence(id) ON DELETE RESTRICT,
@@ -307,7 +334,8 @@ IMMUTABLE_TABLES = (
     "player_snapshots", "player_skills", "player_potentials", "player_pitch_grades",
     "player_zones", "team_snapshots", "team_lineups", "position_training",
     "opponent_snapshots", "match_batches", "match_predictions", "match_results",
-    "capture_evidence", "ocr_observations", "ocr_corrections", "match_result_evidence",
+    "capture_evidence", "ocr_observations", "ocr_corrections", "screen_observations",
+    "ocr_field_candidates", "match_result_evidence",
 )
 
 MIGRATION_2 = (
@@ -347,6 +375,40 @@ MIGRATION_2 = (
          WHERE m.id=NEW.match_result_id AND m.account_id=e.account_id)
          THEN RAISE(ABORT, 'match result evidence account mismatch') END;
        END""",
+)
+
+MIGRATION_3 = (
+    """CREATE TABLE IF NOT EXISTS screen_observations (
+       id INTEGER PRIMARY KEY,
+       evidence_id INTEGER NOT NULL REFERENCES capture_evidence(id) ON DELETE RESTRICT,
+       screen_state TEXT NOT NULL CHECK (screen_state IN ('RANKING_LOBBY','PITCHER_ORDER','OPPONENT_LINEUP','OPPONENT_STARTING_PITCHER_DETAIL','PLAYER_DETAIL_BATTER','PLAYER_DETAIL_PITCHER','TEAM_ROSTER','SYNERGY','POSITION_TRAINING','UNKNOWN')),
+       status TEXT NOT NULL CHECK (status IN ('VERIFIED','CANDIDATE','UNKNOWN')),
+       confidence REAL CHECK (confidence IS NULL OR (confidence BETWEEN 0 AND 1)),
+       profile_version TEXT NOT NULL,
+       anchor_indices_json TEXT NOT NULL,
+       panel_layout_json TEXT,
+       dedupe_key TEXT NOT NULL UNIQUE,
+       created_at TEXT NOT NULL,
+       UNIQUE(evidence_id, profile_version)
+       )""",
+    """CREATE TABLE IF NOT EXISTS ocr_field_candidates (
+       id INTEGER PRIMARY KEY,
+       observation_id INTEGER NOT NULL REFERENCES ocr_observations(id) ON DELETE RESTRICT,
+       field_key TEXT NOT NULL,
+       value_json TEXT,
+       status TEXT NOT NULL CHECK (status IN ('CANDIDATE','LOW_CONFIDENCE','AMBIGUOUS','UNKNOWN')),
+       confidence REAL CHECK (confidence IS NULL OR (confidence BETWEEN 0 AND 1)),
+       source_type TEXT NOT NULL CHECK (source_type IN ('SCREEN_CAPTURE_VERIFIED','USER_PROVIDED_REFERENCE','MANUAL_TRANSCRIPTION','COMMUNITY_RESEARCH','OFFICIAL_RULE','SYNTHETIC_TEST','UNKNOWN')),
+       derivation_version TEXT NOT NULL,
+       context_json TEXT NOT NULL,
+       dedupe_key TEXT NOT NULL UNIQUE,
+       created_at TEXT NOT NULL,
+       UNIQUE(observation_id, field_key, derivation_version, dedupe_key)
+       )""",
+    """CREATE TRIGGER IF NOT EXISTS immutable_screen_observations_update BEFORE UPDATE ON screen_observations BEGIN SELECT RAISE(ABORT, 'immutable evidence row'); END""",
+    """CREATE TRIGGER IF NOT EXISTS immutable_screen_observations_delete BEFORE DELETE ON screen_observations BEGIN SELECT RAISE(ABORT, 'immutable evidence row'); END""",
+    """CREATE TRIGGER IF NOT EXISTS immutable_ocr_field_candidates_update BEFORE UPDATE ON ocr_field_candidates BEGIN SELECT RAISE(ABORT, 'immutable evidence row'); END""",
+    """CREATE TRIGGER IF NOT EXISTS immutable_ocr_field_candidates_delete BEFORE DELETE ON ocr_field_candidates BEGIN SELECT RAISE(ABORT, 'immutable evidence row'); END""",
 )
 
 
@@ -409,6 +471,20 @@ class SQLiteStore:
                 self.connection.execute(
                     "INSERT INTO schema_migrations(version,name,applied_at) VALUES(?,?,?)",
                     (2, "result_provenance_and_account_guards", utc_now()),
+                )
+                self.connection.commit()
+            except Exception:
+                self.connection.rollback()
+                raise
+            current = 2
+        if current < 3:
+            try:
+                self.connection.execute("BEGIN IMMEDIATE")
+                for statement in MIGRATION_3:
+                    self.connection.execute(statement)
+                self.connection.execute(
+                    "INSERT INTO schema_migrations(version,name,applied_at) VALUES(?,?,?)",
+                    (3, "ocr_field_candidates_and_screen_observations", utc_now()),
                 )
                 self.connection.commit()
             except Exception:
@@ -493,6 +569,57 @@ class SQLiteStore:
             (evidence_id, field, text, confidence, canonical_json(bbox), str(source_type), schema_version, key, utc_now()),
         )
         row = self.connection.execute("SELECT id FROM ocr_observations WHERE dedupe_key=?", (key,)).fetchone()
+        assert row is not None
+        inserted = self.connection.execute("SELECT changes()").fetchone()[0] == 1
+        self.connection.commit()
+        return int(row[0]), inserted
+
+    def save_screen_observation(self, *, evidence_id: int, screen_state: str, status: str,
+                                confidence: float | None, profile_version: str,
+                                anchor_indices: list[int], panel_layout: dict[str, Any] | None = None) -> tuple[int, bool]:
+        validate_confidence(confidence)
+        content = {"evidence_id": evidence_id, "screen_state": screen_state, "status": status,
+                   "confidence": confidence, "profile_version": profile_version,
+                   "anchor_indices": anchor_indices, "panel_layout": panel_layout}
+        key = fingerprint(content)
+        existing = self.connection.execute(
+            "SELECT id,screen_state,status,confidence,anchor_indices_json,panel_layout_json FROM screen_observations WHERE evidence_id=? AND profile_version=?",
+            (evidence_id, profile_version),
+        ).fetchone()
+        anchors_json = canonical_json(anchor_indices)
+        panel_json = None if panel_layout is None else canonical_json(panel_layout)
+        if existing:
+            current = tuple(existing[name] for name in ("screen_state", "status", "confidence", "anchor_indices_json", "panel_layout_json"))
+            expected = (screen_state, status, confidence, anchors_json, panel_json)
+            if current != expected:
+                raise sqlite3.IntegrityError("screen classification already exists with different data for this detector version")
+            return int(existing["id"]), False
+        cursor = self.connection.execute(
+            """INSERT INTO screen_observations(evidence_id,screen_state,status,confidence,profile_version,
+            anchor_indices_json,panel_layout_json,dedupe_key,created_at) VALUES(?,?,?,?,?,?,?,?,?)""",
+            (evidence_id, screen_state, status, confidence, profile_version, anchors_json, panel_json, key, utc_now()),
+        )
+        self.connection.commit()
+        return int(cursor.lastrowid), True
+
+    def save_ocr_field_candidate(self, *, observation_id: int, field_key: str, value: Any,
+                                 status: str, confidence: float | None, source_type: EvidenceSource | str,
+                                 derivation_version: str, context: dict[str, Any]) -> tuple[int, bool]:
+        validate_confidence(confidence)
+        source = EvidenceSource(source_type)
+        value_json = None if value is None else canonical_json(value)
+        context_json = canonical_json(context)
+        key = fingerprint({"observation_id": observation_id, "field_key": field_key, "value_json": value_json,
+                           "status": status, "confidence": confidence, "source_type": source.value,
+                           "derivation_version": derivation_version, "context_json": context_json})
+        self.connection.execute(
+            """INSERT INTO ocr_field_candidates(observation_id,field_key,value_json,status,confidence,source_type,
+            derivation_version,context_json,dedupe_key,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(dedupe_key) DO NOTHING""",
+            (observation_id, field_key, value_json, status, confidence, source.value, derivation_version,
+             context_json, key, utc_now()),
+        )
+        row = self.connection.execute("SELECT id FROM ocr_field_candidates WHERE dedupe_key=?", (key,)).fetchone()
         assert row is not None
         inserted = self.connection.execute("SELECT changes()").fetchone()[0] == 1
         self.connection.commit()
@@ -620,7 +747,7 @@ class SQLiteStore:
         return int(cursor.lastrowid), True
 
     def counts(self) -> dict[str, int]:
-        names = ("accounts", "card_masters", "card_instances", "player_snapshots", "team_snapshots", "opponent_snapshots", "match_predictions", "match_results", "capture_evidence", "ocr_observations", "model_versions")
+        names = ("accounts", "card_masters", "card_instances", "player_snapshots", "team_snapshots", "opponent_snapshots", "match_predictions", "match_results", "capture_evidence", "ocr_observations", "ocr_corrections", "screen_observations", "ocr_field_candidates", "model_versions")
         result = {name: int(self.connection.execute(f"SELECT COUNT(*) FROM {name}").fetchone()[0]) for name in names}
         result["validated_match_results"] = int(self.connection.execute(
             "SELECT COUNT(*) FROM match_results WHERE source_type IN ('SCREEN_CAPTURE_VERIFIED','USER_PROVIDED_REFERENCE','MANUAL_TRANSCRIPTION')"

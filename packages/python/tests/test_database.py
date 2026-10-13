@@ -20,11 +20,11 @@ class DatabaseTests(unittest.TestCase):
         self.temporary.cleanup()
 
     def test_migration_is_versioned_idempotent_and_foreign_keys_are_enabled(self):
-        self.assertEqual(self.store.schema_version(), 2)
-        self.assertEqual(self.store.initialize(), 2)
+        self.assertEqual(self.store.schema_version(), 3)
+        self.assertEqual(self.store.initialize(), 3)
         self.assertEqual(self.store.connection.execute("PRAGMA foreign_keys").fetchone()[0], 1)
         self.assertEqual(self.store.connection.execute("PRAGMA foreign_key_check").fetchall(), [])
-        self.assertEqual(self.store.connection.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0], 2)
+        self.assertEqual(self.store.connection.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0], 3)
 
     def test_legacy_v1_database_upgrades_to_v2_with_result_provenance(self):
         path = Path(self.temporary.name) / "legacy.sqlite3"
@@ -35,10 +35,36 @@ class DatabaseTests(unittest.TestCase):
         legacy.commit()
         legacy.close()
         with SQLiteStore(path) as migrated:
-            self.assertEqual(migrated.initialize(), 2)
+            self.assertEqual(migrated.initialize(), 3)
             names = {row["name"] for row in migrated.connection.execute("PRAGMA table_info(match_results)")}
             self.assertIn("source_type", names)
-            self.assertEqual(migrated.schema_version(), 2)
+            self.assertEqual(migrated.schema_version(), 3)
+            self.assertEqual(migrated.connection.execute("SELECT COUNT(*) FROM screen_observations").fetchone()[0], 0)
+            self.assertEqual(migrated.connection.execute("SELECT COUNT(*) FROM ocr_field_candidates").fetchone()[0], 0)
+
+    def test_schema_v2_database_upgrades_to_v3_without_rewriting_evidence(self):
+        path = Path(self.temporary.name) / "v2.sqlite3"
+        with SQLiteStore(path) as seeded:
+            seeded.initialize()
+            account = seeded.ensure_account("account-v2", "Synthetic")
+            evidence_id, _ = seeded.save_capture_evidence(sha256="a" * 64, source_type=EvidenceSource.SYNTHETIC_TEST)
+            observation_id, _ = seeded.save_ocr_observation(
+                evidence_id=evidence_id, field=None, text="synthetic OCR", confidence=0.9,
+                bbox=[0.1, 0.1, 0.2, 0.1], source_type=EvidenceSource.SYNTHETIC_TEST,
+            )
+            seeded.connection.execute("DELETE FROM schema_migrations WHERE version=3")
+            seeded.connection.execute("DROP TABLE screen_observations")
+            seeded.connection.execute("DROP TABLE ocr_field_candidates")
+            seeded.connection.execute("DROP TRIGGER IF EXISTS immutable_screen_observations_update")
+            seeded.connection.execute("DROP TRIGGER IF EXISTS immutable_screen_observations_delete")
+            seeded.connection.execute("DROP TRIGGER IF EXISTS immutable_ocr_field_candidates_update")
+            seeded.connection.execute("DROP TRIGGER IF EXISTS immutable_ocr_field_candidates_delete")
+            seeded.connection.commit()
+            self.assertEqual(seeded.schema_version(), 2)
+        with SQLiteStore(path) as migrated:
+            self.assertEqual(migrated.initialize(), 3)
+            self.assertEqual(migrated.schema_version(), 3)
+            self.assertEqual(migrated.connection.execute("SELECT text FROM ocr_observations WHERE id=?", (observation_id,)).fetchone()[0], "synthetic OCR")
 
     def test_duplicate_team_snapshot_is_ignored_and_changed_state_is_new_immutable_row(self):
         account = self.store.ensure_account("account-a", "Samsung Lions")

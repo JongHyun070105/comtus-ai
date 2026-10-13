@@ -2,11 +2,30 @@
 
 Updated: 2026-10-13. `EXEC PASS` denotes an executed command; compiled-but-not-executed XCTest cases are not counted as passing tests.
 
-## Current task run — 2026-10-13
+## v0.2 OCR and navigation continuation — 2026-10-13
 
 ### EXEC PASS
 
-- `PYTHONPATH=packages/python/src .venv/bin/python -m unittest discover -s packages/python/tests -v`: 28/28 passed; the prior 27 tests remain, with one Swift→Python→SQLite integration test added.
+- `PYTHONPATH=packages/python/src .venv/bin/python -m unittest discover -s packages/python/tests -v`: full suite passed, 53/53.
+- Synthetic `player-card-ocr.synthetic.json` traversed OCR field parsing, explicit active-panel/player/page verification, account-scoped card identity supplied by the fixture, and SQLite snapshot persistence. The stored snapshot source is `SYNTHETIC_TEST`.
+- Existing private local DB migration v2→v3 passed. `db analyze-ocr` processed 4 stored frames / 364 OCR observations and inserted 4 multi-anchor `PITCHER_ORDER:CANDIDATE` rows plus 46 field candidates. A repeat run inserted 0 rows. SQLite `integrity_check` returned `ok`.
+- Every actual-DB field candidate is `LOW_CONFIDENCE` with `value_json=NULL`: 11 name, 11 year, 20 opponent-batter OVR, and 4 enhancement candidates. No card masters, card instances, or player snapshots were created.
+- Current read-only `capture list` returned `EXEC_PASS` with no V26 window. The earlier 4 captures remain historical local evidence; there was no fresh game capture or OCR latency sample in this continuation.
+- `.venv/bin/comtus-ai doctor` passed after standard SwiftPM build was attempted first and blocked at manifest sandbox evaluation. The source-hash-isolated direct Swift 6.4 `swiftc` fallback compiled the current core and CLI; the executable manifest binds both current Swift source SHA-256 and binary SHA-256.
+
+### STATIC / SKIP / BLOCKED
+
+- Real player count remains 0. Korean player/stat OCR accuracy is `NOT_VERIFIABLE`: original frame images are no longer present for ground-truth review, and the remaining tokens are low-confidence.
+- The only live-data screen profile is a `PITCHER_ORDER` candidate. Ranking lobby, opposing lineups/details, batter/pitcher pages, team lineup, synergy, and position training remain `UNKNOWN` until separate captures establish anchors and active-panel geometry.
+- Navigation, retries, depth limits, pause, emergency stop, wrong-screen halt, and coordinate mapping are verified on synthetic frames only. No real input adapter exists.
+- `swift test --package-path apps/mac-capture -c release` remains `BLOCKED` by host `sandbox-exec` manifest evaluation (`sandbox_apply: Operation not permitted`); no sandbox bypass was attempted.
+- Com2uS policy for the Korean V26 service and read-only UI automation is `NOT_VERIFIABLE`; actual game input remains `BLOCKED`.
+
+## Earlier implementation stage (historical; superseded by v0.2 continuation)
+
+### EXEC PASS
+
+- `PYTHONPATH=packages/python/src .venv/bin/python -m unittest discover -s packages/python/tests -v`: 28/28 passed at that stage; the current 53-test result is recorded above.
 - `.venv/bin/comtus-ai doctor`: Swift ScreenCaptureKit/Vision available and Screen Recording permission true.
 - Direct optimized Swift 6.4 `swiftc` build of `MacCaptureCore` and CLI passed after the capture initialization fix. `doctor` and window listing passed with the built binary.
 - Actual capture: fresh `capture list` selected the on-screen window by `process_name=V26` plus non-empty `title`; `capture once` and Korean Vision OCR passed at 1620×2224 px.

@@ -1,6 +1,16 @@
 # Blockers and skips
 
-## Current task run — 2026-10-13
+## v0.2 OCR and navigation continuation — 2026-10-13
+
+- **NOT_VERIFIABLE — player extraction / OCR accuracy:** existing OCR rows have no original images for ground truth; parsed name/year/OVR/enhancement values remain null due confidence 0.5. No real card or player snapshot was promoted.
+- **CANDIDATE — pitcher-order screen:** four local frames match title, instructional text, and bottom actions; minimum anchor confidence is 0.5. The classifier does not authorize navigation from candidate frames.
+- **UNKNOWN / SKIP — all other requested screens and panel bounds:** no separate local examples verify their anchors, central panel, or side previews.
+- **EXEC PASS — simulated navigation only:** mock state transitions, unexpected-screen stop, explicit start, user-input pause, emergency stop, depth/retry limits, and coordinate mapping are covered by Python tests.
+- **BLOCKED — real game UI input:** the applicable Korean V26 policy did not establish permission. Apple Accessibility/CGEvent capability is not publisher permission; no input implementation or live click was performed.
+- **BLOCKED — SwiftPM build/test runner:** standard SwiftPM manifest evaluation is rejected by the host sandbox. The source-matched direct Swift 6.4 compiler fallback and CLI doctor pass; XCTest did not execute.
+- **SKIP — fresh actual screen/latency:** a fresh read-only window listing found no V26 window. Historical local captures remain in the private database.
+
+## Earlier implementation stage (historical; superseded by v0.2 continuation)
 
 - **EXEC PASS — live capture and OCR:** Screen Recording permission is true. A fresh window listing matched `process_name=V26` and a non-empty title; capture, Korean Vision OCR, and local SQLite persistence passed. Original screenshots were deleted after processing.
 - **BLOCKED — SwiftPM test runner:** manifest evaluation still fails with `sandbox-exec: sandbox_apply: Operation not permitted`. Direct optimized compilation and runtime checks passed.

@@ -23,18 +23,41 @@ public struct ObservedScreenStateClassifier: Sendable {
     public init() {}
 
     public func classify(_ observations: [TextObservation]) -> ScreenState {
-        // This anchor was captured from a real V26 screen. Keep the profile
-        // narrow until distinct lineup and player-detail screens are collected.
-        let hasRankingChallengeTitle = observations.contains { observation in
-            let normalized = observation.text.filter { !$0.isWhitespace }
-            let box = observation.bbox
-            return normalized == "랭킹챌린지"
-                && observation.confidence >= 0.95
-                && box.count == 4
-                && box[1] >= 0.9
-                && (0.35...0.65).contains(box[0] + box[2] / 2)
+        recognition(observations).state
+    }
+
+    public func recognition(_ observations: [TextObservation]) -> ScreenClassification {
+        func matching(_ predicate: (String, Double, Double) -> Bool) -> (Int, TextObservation)? {
+            observations.enumerated().first { _, observation in
+                let text = observation.text.filter { !$0.isWhitespace }
+                let box = observation.bbox
+                guard box.count == 4 else { return false }
+                let x = box[0] + box[2] / 2
+                let y = box[1] + box[3] / 2
+                return observation.confidence >= 0.3 && predicate(text, x, y)
+            }
         }
-        return hasRankingChallengeTitle ? .rankingLobby : .unknown
+
+        // This multi-anchor profile is based on the locally stored real
+        // pitcher-order screen. The lobby title alone also appears behind
+        // overlays, so it cannot safely identify the active screen.
+        let title = matching { $0.contains("선발투수변경") && (0.34...0.66).contains($1) && (0.78...0.89).contains($2) }
+        let instruction = matching { $0.contains("내선발투수의순서를변경할수있습니다") && (0.25...0.75).contains($1) && (0.74...0.84).contains($2) }
+        let reset = matching { $0 == "원래대로" && $1 < 0.42 && $2 < 0.12 }
+        let save = matching { $0 == "저장" && $1 > 0.58 && $2 < 0.12 }
+        if let title, let instruction, let reset, let save {
+            let anchors = [title, instruction, reset, save]
+            let confidence = anchors.map { $0.1.confidence }.min()
+            if let confidence, confidence >= 0.3 {
+                return ScreenClassification(
+                    state: .pitcherOrder,
+                    status: confidence >= 0.85 ? .verified : .candidate,
+                    confidence: confidence,
+                    anchorIndices: anchors.map(\.0)
+                )
+            }
+        }
+        return ScreenClassification(state: .unknown, status: .unknown, confidence: nil, anchorIndices: [])
     }
 }
 
