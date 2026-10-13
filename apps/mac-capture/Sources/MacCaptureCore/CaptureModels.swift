@@ -1,6 +1,16 @@
 import CoreGraphics
 import Foundation
 
+public enum ScreenProfileContract {
+    public static let version = "screen-profiles-v2"
+    public static let minimumAnchorConfidence = 0.3
+    public static let verifiedConfidence = 0.85
+}
+
+public enum VisionOCRContract {
+    public static let engineVersion = "Vision-VNRecognizeTextRequestRevision3"
+}
+
 public enum ScreenState: String, Codable, CaseIterable, Sendable {
     case home = "HOME"
     case rankingLobby = "RANKING_LOBBY"
@@ -27,6 +37,16 @@ public struct ScreenClassification: Codable, Equatable, Sendable {
     public let status: ScreenClassificationStatus
     public let confidence: Double?
     public let anchorIndices: [Int]
+    public let profileVersion: String
+
+    public init(state: ScreenState, status: ScreenClassificationStatus, confidence: Double?, anchorIndices: [Int],
+                profileVersion: String = ScreenProfileContract.version) {
+        self.state = state
+        self.status = status
+        self.confidence = confidence
+        self.anchorIndices = anchorIndices
+        self.profileVersion = profileVersion
+    }
 }
 
 public enum PlayerDetailKind: String, Codable, Sendable {
@@ -127,19 +147,24 @@ public struct OCRDocument: Codable, Equatable, Sendable {
     public let screenStatus: ScreenClassificationStatus
     public let screenConfidence: Double?
     public let screenAnchorIndices: [Int]
+    public let screenProfileVersion: String
+    public let ocrEngineVersion: String
     public let frameSize: [Int]
     public let activePanel: [Double]?
     public let observations: [TextObservation]
 
     public init(screenState: ScreenState, frameSize: [Int], activePanel: ScreenRegion?, observations: [TextObservation],
                 screenStatus: ScreenClassificationStatus = .unknown, screenConfidence: Double? = nil,
-                screenAnchorIndices: [Int] = []) {
+                screenAnchorIndices: [Int] = [], screenProfileVersion: String = ScreenProfileContract.version,
+                ocrEngineVersion: String = VisionOCRContract.engineVersion) {
         self.schemaVersion = 1
         self.source = "vision"
         self.screenState = screenState
         self.screenStatus = screenStatus
         self.screenConfidence = screenConfidence
         self.screenAnchorIndices = screenAnchorIndices
+        self.screenProfileVersion = screenProfileVersion
+        self.ocrEngineVersion = ocrEngineVersion
         self.frameSize = frameSize
         self.activePanel = activePanel.map { [$0.x, $0.y, $0.width, $0.height] }
         self.observations = observations

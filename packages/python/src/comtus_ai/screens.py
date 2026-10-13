@@ -2,12 +2,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Sequence
+import math
+from typing import Mapping, Sequence
 
 from .observations import OCRObservation
 
 
 class ScreenState(StrEnum):
+    HOME = "HOME"
     RANKING_LOBBY = "RANKING_LOBBY"
     PITCHER_ORDER = "PITCHER_ORDER"
     OPPONENT_LINEUP = "OPPONENT_LINEUP"
@@ -17,6 +19,7 @@ class ScreenState(StrEnum):
     TEAM_ROSTER = "TEAM_ROSTER"
     SYNERGY = "SYNERGY"
     POSITION_TRAINING = "POSITION_TRAINING"
+    MATCH_RESULT = "MATCH_RESULT"
     UNKNOWN = "UNKNOWN"
 
 
@@ -33,6 +36,9 @@ class PanelRole(StrEnum):
     UNKNOWN = "UNKNOWN"
 
 
+SCREEN_PROFILE_VERSION = "screen-profiles-v2"
+
+
 @dataclass(frozen=True, slots=True)
 class NormalizedRect:
     x: float
@@ -46,12 +52,17 @@ class NormalizedRect:
                 or self.x + self.width > 1.000001 or self.y + self.height > 1.000001):
             raise ValueError("panel rectangles must be non-empty normalized frame bounds")
 
-    def contains(self, bbox: Sequence[float]) -> bool:
-        if len(bbox) != 4:
+    def contains(self, bbox: Sequence[float], *, safety_margin: float = 0.01) -> bool:
+        """Require the whole OCR box to fit inside the ROI plus an edge margin."""
+        if (len(bbox) != 4 or not math.isfinite(safety_margin) or safety_margin < 0
+                or any(not math.isfinite(value) for value in bbox)):
             return False
-        center_x = bbox[0] + bbox[2] / 2
-        center_y = bbox[1] + bbox[3] / 2
-        return self.x <= center_x <= self.x + self.width and self.y <= center_y <= self.y + self.height
+        x, y, width, height = bbox
+        if width <= 0 or height <= 0 or x < 0 or y < 0 or x + width > 1 or y + height > 1:
+            return False
+        return (x >= self.x + safety_margin and y >= self.y + safety_margin
+                and x + width <= self.x + self.width - safety_margin
+                and y + height <= self.y + self.height - safety_margin)
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,6 +72,15 @@ class PanelLayout:
     active: NormalizedRect
     left_preview: NormalizedRect
     right_preview: NormalizedRect
+
+    def __post_init__(self) -> None:
+        regions = (self.active, self.left_preview, self.right_preview)
+        for index, first in enumerate(regions):
+            for second in regions[index + 1:]:
+                overlap_width = min(first.x + first.width, second.x + second.width) - max(first.x, second.x)
+                overlap_height = min(first.y + first.height, second.y + second.height) - max(first.y, second.y)
+                if overlap_width > 1e-9 and overlap_height > 1e-9:
+                    raise ValueError("panel layout regions must not overlap")
 
     def role_for(self, bbox: Sequence[float]) -> PanelRole:
         matches = [role for role, region in (
@@ -80,7 +100,7 @@ class ScreenClassification:
     active_panel: NormalizedRect | None = None
     left_preview: NormalizedRect | None = None
     right_preview: NormalizedRect | None = None
-    profile_version: str = "screen-profiles-v1"
+    profile_version: str = SCREEN_PROFILE_VERSION
 
 
 def _compact(text: str) -> str:
@@ -102,6 +122,8 @@ def recognize_screen(observations: Sequence[OCRObservation]) -> ScreenClassifica
     reset: list[int] = []
     save: list[int] = []
     for index, observation in enumerate(observations):
+        if observation.confidence is None or observation.confidence < 0.3:
+            continue
         text = _compact(observation.text)
         x, y = _center(observation.bbox)
         if ("선발투수변경" in text and 0.34 <= x <= 0.66 and 0.78 <= y <= 0.89):
@@ -121,3 +143,21 @@ def recognize_screen(observations: Sequence[OCRObservation]) -> ScreenClassifica
         return ScreenClassification(ScreenState.PITCHER_ORDER, status, confidence, indices)
 
     return ScreenClassification(ScreenState.UNKNOWN, ClassificationStatus.UNKNOWN, None)
+
+
+def classifier_payload_matches(payload: Mapping[str, object], classification: ScreenClassification) -> bool:
+    """Require Swift and Python state, anchors, confidence and profile versions to agree."""
+    confidence = payload.get("screen_confidence")
+    confidence_matches = (
+        confidence is None and classification.confidence is None
+    ) or (
+        isinstance(confidence, (int, float)) and classification.confidence is not None
+        and abs(float(confidence) - classification.confidence) <= 1e-6
+    )
+    return (
+        payload.get("screen_state") == classification.state.value
+        and payload.get("screen_status") == classification.status.value
+        and confidence_matches
+        and payload.get("screen_anchor_indices") == list(classification.anchor_indices)
+        and payload.get("screen_profile_version") == classification.profile_version
+    )

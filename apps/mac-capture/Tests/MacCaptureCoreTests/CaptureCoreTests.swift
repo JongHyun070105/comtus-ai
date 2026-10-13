@@ -3,6 +3,31 @@ import CoreGraphics
 import CoreText
 @testable import MacCaptureCore
 
+private struct ScreenClassificationFixtureDocument: Decodable {
+    let profileVersion: String
+    let screenStates: [String]
+    let cases: [ScreenClassificationFixtureCase]
+}
+
+private struct ScreenClassificationFixtureCase: Decodable {
+    let name: String
+    let observations: [ScreenClassificationFixtureObservation]
+    let expected: ScreenClassificationFixtureExpected
+}
+
+private struct ScreenClassificationFixtureObservation: Decodable {
+    let text: String
+    let confidence: Double
+    let bbox: [Double]
+}
+
+private struct ScreenClassificationFixtureExpected: Decodable {
+    let state: String
+    let status: String
+    let confidence: Double?
+    let anchorIndices: [Int]
+}
+
 final class CaptureCoreTests: XCTestCase {
     func testDetailArrowSemanticsKeepPlayerSwitchSeparateFromPageChange() throws {
         var state = try PlayerDetailNavigation(kind: .pitcher, page: 1)
@@ -59,6 +84,33 @@ final class CaptureCoreTests: XCTestCase {
         XCTAssertEqual(classifier.classify([TextObservation(text: "랭킹 챌린지", confidence: 0.8, bbox: titleBox)]), .unknown)
     }
 
+    func testSharedScreenContractMatchesSwiftStateAnchorConfidenceAndVersion() throws {
+        var repo = URL(fileURLWithPath: #filePath)
+        for _ in 0..<5 { repo.deleteLastPathComponent() }
+        let fixtureURL = repo.appendingPathComponent("schemas/v1/screen-classification-fixtures.json")
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let fixture = try decoder.decode(ScreenClassificationFixtureDocument.self, from: Data(contentsOf: fixtureURL))
+        XCTAssertEqual(ScreenState.allCases.map(\.rawValue), fixture.screenStates)
+        XCTAssertEqual(ScreenProfileContract.version, fixture.profileVersion)
+
+        let classifier = ObservedScreenStateClassifier()
+        for item in fixture.cases {
+            let observations = try item.observations.map { item -> TextObservation in
+                guard item.bbox.count == 4 else { throw CaptureFailure.invalidRegion }
+                let region = try ScreenRegion(x: item.bbox[0], y: item.bbox[1],
+                                             width: item.bbox[2], height: item.bbox[3])
+                return TextObservation(text: item.text, confidence: item.confidence, bbox: region)
+            }
+            let result = classifier.recognition(observations)
+            XCTAssertEqual(result.state.rawValue, item.expected.state, item.name)
+            XCTAssertEqual(result.status.rawValue, item.expected.status, item.name)
+            XCTAssertEqual(result.confidence, item.expected.confidence, item.name)
+            XCTAssertEqual(result.anchorIndices, item.expected.anchorIndices, item.name)
+            XCTAssertEqual(result.profileVersion, fixture.profileVersion, item.name)
+        }
+    }
+
     func testLatencyProfilerReportsTailPercentilesAndMissedFrames() async {
         let profiler = LatencyProfiler()
         await profiler.record(stage: "capture", durationMilliseconds: 8)
@@ -100,6 +152,8 @@ final class CaptureCoreTests: XCTestCase {
         let processor = VisionOCRProcessor()
         let document = try processor.process(image, activePanel: .fullFrame, state: .unknown)
         XCTAssertEqual(document.schemaVersion, 1)
+        XCTAssertEqual(document.screenProfileVersion, ScreenProfileContract.version)
+        XCTAssertEqual(document.ocrEngineVersion, VisionOCRContract.engineVersion)
         XCTAssertEqual(document.frameSize, [width, height])
         XCTAssertEqual(try processor.process(image, activePanel: .fullFrame, state: .rankingLobby).screenState, .unknown)
         XCTAssertEqual(document.screenStatus, .unknown)

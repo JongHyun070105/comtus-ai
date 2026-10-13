@@ -106,16 +106,19 @@ comtus-ai capture once --window-id 123 --output data/captures/frame.png
 comtus-ai capture ocr data/captures/frame.png --screen-state UNKNOWN
 comtus-ai capture ocr data/captures/frame.png --screen-state PLAYER_DETAIL_BATTER --active-panel 0.2 0.1 0.6 0.8
 comtus-ai capture ocr data/captures/frame.png --screen-state UNKNOWN --store --evidence-source SCREEN_CAPTURE_VERIFIED
+comtus-ai capture session --interval 0.5 --stable-samples 2 --preserve-images
 comtus-ai db analyze-ocr
 ```
 
 캡처는 ScreenCaptureKit만 사용합니다. 권한을 자동으로 요청하거나 우회하지 않습니다. `doctor`, `capture list`, `capture once`는 시스템 설정의 사전 권한 상태를 확인하고 권한이 없으면 `SKIP`으로 끝납니다. `capture ocr`는 로컬 이미지에 Vision을 실행하므로 Screen Recording 권한이 필요하지 않습니다.
 
-`--store`는 이미지 SHA-256, OCR 관측, 다중 앵커 화면 분류, 버전이 붙은 필드 후보를 SQLite에 추가하고 같은 입력을 중복 제거합니다. 저장 출처는 기본 `UNKNOWN`입니다. `SCREEN_CAPTURE_VERIFIED`는 이 CLI의 ScreenCaptureKit 캡처로 생성한 이미지에만 지정하십시오. `db analyze-ocr`는 기존 로컬 OCR 행을 분석하고 요약만 출력합니다. 원문 OCR 텍스트는 JSON 출력에 포함하지 않습니다. DB는 schema v3으로 append-only 마이그레이션합니다. `--database`로 별도 DB를 지정할 수 있습니다.
+`--store`는 이미지 SHA-256, OCR 관측, 다중 앵커 화면 분류, 버전이 붙은 필드 후보를 SQLite에 추가하고 같은 입력을 중복 제거합니다. 저장 출처는 기본 `UNKNOWN`입니다. `SCREEN_CAPTURE_VERIFIED`는 이 CLI의 ScreenCaptureKit 캡처로 생성한 이미지에만 지정하십시오. `db analyze-ocr`는 기존 로컬 OCR 행을 분석하고 요약만 출력합니다. 원문 OCR 텍스트는 JSON 출력에 포함하지 않습니다. DB는 schema v4로 append-only 마이그레이션합니다. `--database`로 별도 DB를 지정할 수 있습니다.
+
+`capture session`은 화면에 표시된 V26 창만 읽고, 저해상도 시각 서명으로 작은 애니메이션을 견디며 화면이 바뀐 뒤 안정되면 OCR합니다. 같은 화면의 중복 OCR을 건너뛰고 프레임/OCR 지연 p50·p95, CPU 사용률, 누락 프레임을 출력합니다. 게임 입력이나 화면 이동은 하지 않습니다. `--max-polls`로 세션 길이를 제한할 수 있고, 기본은 Ctrl-C까지 대기합니다. `--preserve-images`는 원본 PNG를 `data/private-fixtures/`에 SHA-256 이름으로 저장합니다. 디렉터리·파일 권한은 각각 0700·0600이며 총 용량 기본 상한은 1 GiB입니다.
 
 Swift 실행은 먼저 현재 소스 해시별 격리 경로에 표준 SwiftPM Release 빌드를 시도합니다. 호스트가 manifest 실행을 막으면 재현 가능한 직접 `swiftc` 대체 경로를 사용합니다. 바이너리와 인접 매니페스트의 소스 SHA-256·실행 파일 SHA-256이 모두 현재 소스와 일치해야 실행됩니다. `COMTUS_AI_SWIFT_BIN` 경로도 같은 매니페스트 검증을 거칩니다. 라이브러리 경로는 해당 바이너리 디렉터리의 동적 라이브러리에서 설정합니다.
 
-상세 화면 가장자리에는 이웃 페이지가 보일 수 있습니다. OCR 전에 실제 화면에서 확인한 `--active-panel x y width height`를 전달하십시오. 값은 프레임 기준 정규화 좌표이며 원점은 좌측 아래입니다. 기본 패널 경계는 추측하지 않습니다. 현재 로컬 표본으로는 선발 순서 변경 화면만 제목, 설명, 원래대로, 저장의 네 앵커를 모두 확인할 수 있습니다. 낮은 OCR 점수의 화면은 `CANDIDATE`이고 탐색 안전 제어에는 사용할 수 없습니다. 랭킹 로비, 라인업, 선수 상세, 시너지, 특훈의 자체 화면 표본은 아직 검증되지 않아 `UNKNOWN`입니다.
+상세 화면 가장자리에는 이웃 페이지가 보일 수 있습니다. 화면을 잘라 Vision OCR을 실행할 때는 실제 화면에서 확인한 `--active-panel x y width height`를 사용합니다. 전체 화면 OCR 결과에서 카드 하나만 파싱할 때는 `--field-panel`을 사용합니다. 두 값 모두 프레임 기준 정규화 좌표이며 원점은 좌측 아래입니다. OCR 박스 전체가 패널 안쪽 안전 마진에 들어오지 않으면 해당 필드를 버립니다. 기본 패널 경계는 추측하지 않습니다. 현재 실제 표본으로는 선발 순서 변경 화면만 제목, 설명, 원래대로, 저장의 네 앵커를 확인할 수 있습니다. 낮은 OCR 점수의 화면은 `CANDIDATE`이고 탐색 안전 제어에는 사용할 수 없습니다. 랭킹 로비, 라인업, 선수 상세, 시너지, 특훈의 자체 화면 표본은 아직 검증되지 않아 `UNKNOWN`입니다.
 
 ## 데이터와 검증 상태
 

@@ -10,7 +10,7 @@ from ..fingerprint import canonical_json, fingerprint
 from ..models import EvidenceSource, validate_confidence
 
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 INITIAL_SCHEMA = r"""
 CREATE TABLE accounts (
@@ -411,6 +411,75 @@ MIGRATION_3 = (
     """CREATE TRIGGER IF NOT EXISTS immutable_ocr_field_candidates_delete BEFORE DELETE ON ocr_field_candidates BEGIN SELECT RAISE(ABORT, 'immutable evidence row'); END""",
 )
 
+MIGRATION_4 = (
+    """CREATE TABLE screen_observations_v4 (
+       id INTEGER PRIMARY KEY,
+       evidence_id INTEGER NOT NULL REFERENCES capture_evidence(id) ON DELETE RESTRICT,
+       screen_state TEXT NOT NULL CHECK (screen_state IN ('HOME','RANKING_LOBBY','PITCHER_ORDER','OPPONENT_LINEUP','OPPONENT_STARTING_PITCHER_DETAIL','PLAYER_DETAIL_BATTER','PLAYER_DETAIL_PITCHER','TEAM_ROSTER','SYNERGY','POSITION_TRAINING','MATCH_RESULT','UNKNOWN')),
+       status TEXT NOT NULL CHECK (status IN ('VERIFIED','CANDIDATE','UNKNOWN')),
+       confidence REAL CHECK (confidence IS NULL OR (confidence BETWEEN 0 AND 1)),
+       profile_version TEXT NOT NULL,
+       anchor_indices_json TEXT NOT NULL,
+       panel_layout_json TEXT,
+       dedupe_key TEXT NOT NULL UNIQUE,
+       created_at TEXT NOT NULL,
+       UNIQUE(evidence_id, profile_version)
+       )""",
+    """INSERT INTO screen_observations_v4(id,evidence_id,screen_state,status,confidence,profile_version,
+       anchor_indices_json,panel_layout_json,dedupe_key,created_at)
+       SELECT id,evidence_id,screen_state,status,confidence,profile_version,anchor_indices_json,
+       panel_layout_json,dedupe_key,created_at FROM screen_observations""",
+    "DROP TABLE screen_observations",
+    "ALTER TABLE screen_observations_v4 RENAME TO screen_observations",
+    """CREATE TABLE ocr_field_candidates_v4 (
+       id INTEGER PRIMARY KEY,
+       observation_id INTEGER NOT NULL REFERENCES ocr_observations(id) ON DELETE RESTRICT,
+       field_key TEXT NOT NULL,
+       value_json TEXT,
+       status TEXT NOT NULL CHECK (status IN ('VERIFIED','CANDIDATE','LOW_CONFIDENCE','AMBIGUOUS','UNKNOWN','UNRESOLVED')),
+       confidence REAL CHECK (confidence IS NULL OR (confidence BETWEEN 0 AND 1)),
+       source_type TEXT NOT NULL CHECK (source_type IN ('SCREEN_CAPTURE_VERIFIED','USER_PROVIDED_REFERENCE','MANUAL_TRANSCRIPTION','COMMUNITY_RESEARCH','OFFICIAL_RULE','SYNTHETIC_TEST','UNKNOWN')),
+       derivation_version TEXT NOT NULL,
+       context_json TEXT NOT NULL,
+       dedupe_key TEXT NOT NULL UNIQUE,
+       created_at TEXT NOT NULL,
+       UNIQUE(observation_id, field_key, derivation_version, dedupe_key)
+       )""",
+    """INSERT INTO ocr_field_candidates_v4(id,observation_id,field_key,value_json,status,confidence,
+       source_type,derivation_version,context_json,dedupe_key,created_at)
+       SELECT id,observation_id,field_key,value_json,status,confidence,source_type,derivation_version,
+       context_json,dedupe_key,created_at FROM ocr_field_candidates""",
+    "DROP TABLE ocr_field_candidates",
+    "ALTER TABLE ocr_field_candidates_v4 RENAME TO ocr_field_candidates",
+    "CREATE TRIGGER immutable_screen_observations_update BEFORE UPDATE ON screen_observations BEGIN SELECT RAISE(ABORT, 'immutable evidence row'); END",
+    "CREATE TRIGGER immutable_screen_observations_delete BEFORE DELETE ON screen_observations BEGIN SELECT RAISE(ABORT, 'immutable evidence row'); END",
+    "CREATE TRIGGER immutable_ocr_field_candidates_update BEFORE UPDATE ON ocr_field_candidates BEGIN SELECT RAISE(ABORT, 'immutable evidence row'); END",
+    "CREATE TRIGGER immutable_ocr_field_candidates_delete BEFORE DELETE ON ocr_field_candidates BEGIN SELECT RAISE(ABORT, 'immutable evidence row'); END",
+    """CREATE TABLE private_fixture_assets (
+       evidence_id INTEGER PRIMARY KEY REFERENCES capture_evidence(id) ON DELETE RESTRICT,
+       relative_path TEXT NOT NULL UNIQUE,
+       sha256 TEXT NOT NULL UNIQUE,
+       byte_size INTEGER NOT NULL CHECK (byte_size > 0),
+       captured_at TEXT NOT NULL,
+       window_size_json TEXT NOT NULL,
+       screen_state TEXT NOT NULL CHECK (screen_state IN ('HOME','RANKING_LOBBY','PITCHER_ORDER','OPPONENT_LINEUP','OPPONENT_STARTING_PITCHER_DETAIL','PLAYER_DETAIL_BATTER','PLAYER_DETAIL_PITCHER','TEAM_ROSTER','SYNERGY','POSITION_TRAINING','MATCH_RESULT','UNKNOWN')),
+       ocr_engine_version TEXT NOT NULL,
+       roi_json TEXT,
+       ocr_document_json TEXT NOT NULL,
+       status TEXT NOT NULL CHECK (status IN ('PRESENT','DELETING','DELETED')),
+       deleted_at TEXT,
+       created_at TEXT NOT NULL
+       )""",
+    """CREATE TABLE capture_session_frames (
+       evidence_id INTEGER NOT NULL REFERENCES capture_evidence(id) ON DELETE RESTRICT,
+       profile_version TEXT NOT NULL,
+       status TEXT NOT NULL CHECK (status IN ('PROCESSING','COMPLETE')),
+       started_at TEXT NOT NULL,
+       completed_at TEXT,
+       PRIMARY KEY(evidence_id,profile_version)
+       )""",
+)
+
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -485,6 +554,20 @@ class SQLiteStore:
                 self.connection.execute(
                     "INSERT INTO schema_migrations(version,name,applied_at) VALUES(?,?,?)",
                     (3, "ocr_field_candidates_and_screen_observations", utc_now()),
+                )
+                self.connection.commit()
+            except Exception:
+                self.connection.rollback()
+                raise
+            current = 3
+        if current < 4:
+            try:
+                self.connection.execute("BEGIN IMMEDIATE")
+                for statement in MIGRATION_4:
+                    self.connection.execute(statement)
+                self.connection.execute(
+                    "INSERT INTO schema_migrations(version,name,applied_at) VALUES(?,?,?)",
+                    (4, "year_resolution_screen_parity_and_private_fixture_lifecycle", utc_now()),
                 )
                 self.connection.commit()
             except Exception:
@@ -644,6 +727,30 @@ class SQLiteStore:
         )
         self.connection.commit()
         return int(cursor.lastrowid), True
+
+    def capture_frame_is_processed(self, *, sha256: str, profile_version: str) -> bool:
+        row = self.connection.execute(
+            """SELECT f.status FROM capture_evidence e JOIN capture_session_frames f ON f.evidence_id=e.id
+               WHERE e.sha256=? AND f.profile_version=?""",
+            (sha256.lower(), profile_version),
+        ).fetchone()
+        if row is not None:
+            return row["status"] == "COMPLETE"
+        return self.connection.execute(
+            """SELECT 1 FROM capture_evidence e JOIN screen_observations s ON s.evidence_id=e.id
+               WHERE e.sha256=? AND s.profile_version=? LIMIT 1""",
+            (sha256.lower(), profile_version),
+        ).fetchone() is not None
+
+    def mark_capture_frame_processing(self, *, evidence_id: int, profile_version: str, complete: bool) -> None:
+        status = "COMPLETE" if complete else "PROCESSING"
+        self.connection.execute(
+            """INSERT INTO capture_session_frames(evidence_id,profile_version,status,started_at,completed_at)
+               VALUES(?,?,?,?,?) ON CONFLICT(evidence_id,profile_version) DO UPDATE SET
+               status=excluded.status,completed_at=excluded.completed_at""",
+            (evidence_id, profile_version, status, utc_now(), utc_now() if complete else None),
+        )
+        self.connection.commit()
 
     def record_ocr_correction(self, observation_id: int, corrected_text: str, *, reason: str | None = None,
                               corrected_by: str | None = None) -> int:

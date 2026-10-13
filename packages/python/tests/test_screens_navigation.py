@@ -1,8 +1,11 @@
+import json
+from pathlib import Path
 import unittest
 
 from comtus_ai.navigation import (
     CoordinateOrigin,
     MockUIActionAdapter,
+    NavigationVisitKey,
     NavigationPlanner,
     PlayerPageTracker,
     SafetyController,
@@ -74,6 +77,23 @@ class ScreenRecognitionTests(unittest.TestCase):
         self.assertEqual(layout.role_for((0.15, 0.4, 0.1, 0.1)), PanelRole.LEFT_PREVIEW)
         self.assertEqual(layout.role_for((0.75, 0.4, 0.1, 0.1)), PanelRole.RIGHT_PREVIEW)
         self.assertEqual(layout.role_for((0.32, 0.4, 0.04, 0.1)), PanelRole.UNKNOWN)
+
+    def test_shared_screen_contract_matches_python_state_anchor_confidence_and_version(self):
+        fixture_path = Path(__file__).parents[3] / "schemas" / "v1" / "screen-classification-fixtures.json"
+        fixture = json.loads(fixture_path.read_text())
+        self.assertEqual([state.value for state in ScreenState], fixture["screen_states"])
+        self.assertEqual(fixture["profile_version"], "screen-profiles-v2")
+        for case in fixture["cases"]:
+            rows = tuple(ocr(item["text"], item["confidence"], tuple(item["bbox"]))
+                         for item in case["observations"])
+            result = recognize_screen(rows)
+            expected = case["expected"]
+            with self.subTest(case=case["name"]):
+                self.assertEqual(result.state.value, expected["state"])
+                self.assertEqual(result.status.value, expected["status"])
+                self.assertEqual(result.confidence, expected["confidence"])
+                self.assertEqual(list(result.anchor_indices), expected["anchor_indices"])
+                self.assertEqual(result.profile_version, fixture["profile_version"])
 
 
 class PlayerPageTrackingTests(unittest.TestCase):
@@ -233,6 +253,104 @@ class NavigationSafetyTests(unittest.TestCase):
         self.assertFalse(safety.before_action(frame=verified(ScreenState.RANKING_LOBBY), transition=unsafe,
                                              depth=0, step_index=0))
         self.assertEqual(safety.status, SessionStatus.HALTED)
+
+    def test_same_detail_screen_can_visit_batters_one_through_nine(self):
+        players = [f"synthetic:batter-{slot}" for slot in range(1, 10)]
+        goal_name = "scan-samsung-batters"
+        transitions = tuple(
+            Transition(ScreenState.PLAYER_DETAIL_BATTER, UIAction.NEXT_PLAYER,
+                       ScreenState.PLAYER_DETAIL_BATTER, source_player_key=players[index], source_page=1,
+                       target_player_key=players[index + 1], target_page=1, navigation_goal=goal_name)
+            for index in range(8)
+        )
+        planner = NavigationPlanner(transitions)
+        start = verified(ScreenState.PLAYER_DETAIL_BATTER, player=players[0], page=1, panel=PanelRole.ACTIVE)
+        goal = NavigationVisitKey(ScreenState.PLAYER_DETAIL_BATTER, players[-1], 1, goal_name)
+        adapter = MockUIActionAdapter({
+            (ScreenState.PLAYER_DETAIL_BATTER, players[index], 1, UIAction.NEXT_PLAYER):
+                verified(ScreenState.PLAYER_DETAIL_BATTER, player=players[index + 1], page=1,
+                         panel=PanelRole.ACTIVE)
+            for index in range(8)
+        })
+        safety = SafetyController(max_depth=9)
+
+        result = SimulatedNavigator(planner).run(start_frame=start, goal=goal, adapter=adapter,
+                                                 safety=safety, explicitly_requested=True)
+
+        self.assertEqual(result.status, SessionStatus.COMPLETE)
+        self.assertEqual(result.route.states, (ScreenState.PLAYER_DETAIL_BATTER,) * 9)
+        self.assertEqual(len(safety._visited), 9)
+        self.assertEqual(len(adapter.actions), 8)
+
+    def test_one_pitcher_then_nine_batters_are_distinct_verified_visits(self):
+        pitcher = "synthetic:pitcher-1"
+        batters = [f"synthetic:batter-{slot}" for slot in range(1, 10)]
+        goal_name = "scan-samsung-lineup"
+        transitions = [
+            Transition(ScreenState.PLAYER_DETAIL_PITCHER, UIAction.BACK, ScreenState.OPPONENT_LINEUP,
+                       source_player_key=pitcher, source_page=1, navigation_goal=goal_name),
+            Transition(ScreenState.OPPONENT_LINEUP, UIAction.OPEN_BATTER_DETAIL, ScreenState.PLAYER_DETAIL_BATTER,
+                       target_player_key=batters[0], target_page=1, navigation_goal=goal_name),
+        ]
+        transitions.extend(
+            Transition(ScreenState.PLAYER_DETAIL_BATTER, UIAction.NEXT_PLAYER, ScreenState.PLAYER_DETAIL_BATTER,
+                       source_player_key=batters[index], source_page=1, target_player_key=batters[index + 1],
+                       target_page=1, navigation_goal=goal_name)
+            for index in range(8)
+        )
+        start = verified(ScreenState.PLAYER_DETAIL_PITCHER, player=pitcher, page=1, panel=PanelRole.ACTIVE)
+        adapter_transitions = {
+            (ScreenState.PLAYER_DETAIL_PITCHER, pitcher, 1, UIAction.BACK): verified(ScreenState.OPPONENT_LINEUP),
+            (ScreenState.OPPONENT_LINEUP, None, None, UIAction.OPEN_BATTER_DETAIL):
+                verified(ScreenState.PLAYER_DETAIL_BATTER, player=batters[0], page=1, panel=PanelRole.ACTIVE),
+        }
+        adapter_transitions.update({
+            (ScreenState.PLAYER_DETAIL_BATTER, batters[index], 1, UIAction.NEXT_PLAYER):
+                verified(ScreenState.PLAYER_DETAIL_BATTER, player=batters[index + 1], page=1,
+                         panel=PanelRole.ACTIVE)
+            for index in range(8)
+        })
+        safety = SafetyController(max_depth=12)
+        result = SimulatedNavigator(NavigationPlanner(transitions)).run(
+            start_frame=start,
+            goal=NavigationVisitKey(ScreenState.PLAYER_DETAIL_BATTER, batters[-1], 1, goal_name),
+            adapter=MockUIActionAdapter(adapter_transitions), safety=safety, explicitly_requested=True,
+        )
+        self.assertEqual(result.status, SessionStatus.COMPLETE)
+        self.assertEqual(result.route.states.count(ScreenState.PLAYER_DETAIL_PITCHER), 1)
+        self.assertEqual(result.route.states.count(ScreenState.PLAYER_DETAIL_BATTER), 9)
+
+    def test_page_return_is_a_new_navigation_goal_but_does_not_duplicate_collection(self):
+        frame_page_one = verified(ScreenState.PLAYER_DETAIL_BATTER, player="synthetic:b1", page=1,
+                                   panel=PanelRole.ACTIVE)
+        frame_page_two = verified(ScreenState.PLAYER_DETAIL_BATTER, player="synthetic:b1", page=2,
+                                   panel=PanelRole.ACTIVE)
+        safety = SafetyController()
+        safety.start(explicitly_requested=True)
+        safety.begin_goal("collect-page-one")
+        self.assertTrue(safety.record_visit(frame_page_one))
+        self.assertFalse(safety.record_visit(frame_page_one))
+        self.assertTrue(safety.record_visit(frame_page_two))
+        self.assertTrue(safety.record_collection(frame_page_one))
+        self.assertFalse(safety.record_collection(frame_page_one))
+        self.assertTrue(safety.record_visit(frame_page_one, goal="return-to-page-one"))
+        self.assertFalse(safety.record_collection(frame_page_one))
+
+    def test_expected_player_mismatch_halts_before_a_candidate_can_be_reused(self):
+        p1, p2, p3 = "synthetic:b1", "synthetic:b2", "synthetic:b3"
+        transition = Transition(ScreenState.PLAYER_DETAIL_BATTER, UIAction.NEXT_PLAYER,
+                                ScreenState.PLAYER_DETAIL_BATTER, source_player_key=p1, source_page=1,
+                                target_player_key=p2, target_page=1)
+        start = verified(ScreenState.PLAYER_DETAIL_BATTER, player=p1, page=1, panel=PanelRole.ACTIVE)
+        wrong = verified(ScreenState.PLAYER_DETAIL_BATTER, player=p3, page=1, panel=PanelRole.ACTIVE)
+        result = SimulatedNavigator(NavigationPlanner((transition,))).run(
+            start_frame=start, goal=NavigationVisitKey(ScreenState.PLAYER_DETAIL_BATTER, p2, 1,
+                                                       ScreenState.PLAYER_DETAIL_BATTER.value),
+            adapter=MockUIActionAdapter({(ScreenState.PLAYER_DETAIL_BATTER, p1, 1, UIAction.NEXT_PLAYER): wrong}),
+            safety=SafetyController(max_depth=2), explicitly_requested=True,
+        )
+        self.assertEqual(result.status, SessionStatus.HALTED)
+        self.assertIn("expected player", result.halt_reason)
 
 
 class CoordinateMappingTests(unittest.TestCase):

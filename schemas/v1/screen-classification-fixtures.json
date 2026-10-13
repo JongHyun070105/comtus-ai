@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "profile_version": "screen-profiles-v2",
+  "minimum_anchor_confidence": 0.3,
+  "verified_confidence": 0.85,
+  "screen_states": [
+    "HOME",
+    "RANKING_LOBBY",
+    "PITCHER_ORDER",
+    "OPPONENT_LINEUP",
+    "OPPONENT_STARTING_PITCHER_DETAIL",
+    "PLAYER_DETAIL_BATTER",
+    "PLAYER_DETAIL_PITCHER",
+    "TEAM_ROSTER",
+    "SYNERGY",
+    "POSITION_TRAINING",
+    "MATCH_RESULT",
+    "UNKNOWN"
+  ],
+  "cases": [
+    {
+      "name": "pitcher-order-candidate",
+      "observations": [
+        {"text": "{ 선발 투수 변경", "confidence": 0.5, "bbox": [0.365, 0.825, 0.244, 0.028]},
+        {"text": "좌측에 표시되는 내 선발 투수의 순서를 변경할 수 있습니다.", "confidence": 1.0, "bbox": [0.289, 0.789, 0.435, 0.016]},
+        {"text": "원래대로", "confidence": 1.0, "bbox": [0.245, 0.056, 0.080, 0.019]},
+        {"text": "저장", "confidence": 0.5, "bbox": [0.696, 0.056, 0.042, 0.019]}
+      ],
+      "expected": {"state": "PITCHER_ORDER", "status": "CANDIDATE", "confidence": 0.5, "anchor_indices": [0, 1, 2, 3]}
+    },
+    {
+      "name": "low-confidence-anchor-is-unknown",
+      "observations": [
+        {"text": "선발 투수 변경", "confidence": 0.2, "bbox": [0.4, 0.82, 0.2, 0.03]},
+        {"text": "랭킹 챌린지", "confidence": 0.2, "bbox": [0.43, 0.93, 0.1, 0.02]}
+      ],
+      "expected": {"state": "UNKNOWN", "status": "UNKNOWN", "confidence": null, "anchor_indices": []}
+    }
+  ]
+}

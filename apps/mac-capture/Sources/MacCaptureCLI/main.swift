@@ -30,8 +30,15 @@ struct MacCaptureCLI {
                 let output = try stringOption("--output", in: args)
                 let image = try await ScreenCaptureFrameSource().capture(windowID: windowID)
                 try ScreenCaptureFrameSource().savePNG(image, to: URL(fileURLWithPath: output))
-                try printJSON(["status": "EXEC_PASS", "window_id": windowID, "width_pixels": image.width,
-                               "height_pixels": image.height, "output": output, "source": "SCREEN_CAPTURE_VERIFIED"])
+                let capturedAt = ISO8601DateFormatter().string(from: Date())
+                var response: [String: Any] = ["status": "EXEC_PASS", "window_id": windowID,
+                                               "width_pixels": image.width, "height_pixels": image.height,
+                                               "captured_at": capturedAt, "output": output,
+                                               "source": "SCREEN_CAPTURE_VERIFIED"]
+                if args.contains("--visual-signature") {
+                    response["visual_signature"] = FrameVisualSignature.make(image)?.base64EncodedString() ?? ""
+                }
+                try printJSON(response)
             case "ocr":
                 let path = try stringOption("--image", in: args)
                 let state = try stateOption(in: args)

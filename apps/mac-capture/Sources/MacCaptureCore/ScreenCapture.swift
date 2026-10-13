@@ -4,6 +4,28 @@ import Foundation
 import ImageIO
 import ScreenCaptureKit
 
+public enum FrameVisualSignature {
+    public static func make(_ image: CGImage, width: Int = 96, height: Int = 132) -> Data? {
+        guard width > 0, height > 0 else { return nil }
+        var pixels = [UInt8](repeating: 0, count: width * height)
+        let created = pixels.withUnsafeMutableBytes { buffer -> Bool in
+            guard let context = CGContext(
+                data: buffer.baseAddress,
+                width: width,
+                height: height,
+                bitsPerComponent: 8,
+                bytesPerRow: width,
+                space: CGColorSpaceCreateDeviceGray(),
+                bitmapInfo: CGImageAlphaInfo.none.rawValue
+            ) else { return false }
+            context.interpolationQuality = .low
+            context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+            return true
+        }
+        return created ? Data(pixels) : nil
+    }
+}
+
 public struct ScreenCaptureFrameSource: FrameSource {
     public init() {}
 
@@ -46,6 +68,12 @@ public struct ScreenCaptureFrameSource: FrameSource {
         }
         CGImageDestinationAddImage(destination, image, nil)
         guard CGImageDestinationFinalize(destination) else { throw CaptureFailure.imageSaveFailed(url.path) }
+        do {
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+        } catch {
+            try? FileManager.default.removeItem(at: url)
+            throw CaptureFailure.imageSaveFailed(url.path)
+        }
     }
 }
 

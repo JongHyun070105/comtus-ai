@@ -171,7 +171,7 @@ class SyntheticPipelineTests(unittest.TestCase):
                         status=candidate.status.value, confidence=candidate.confidence, source_type=candidate.source,
                         derivation_version=candidate.derivation_version, context=candidate.context_dict(),
                     )
-                self.assertEqual(store.schema_version(), 3)
+                self.assertEqual(store.schema_version(), 4)
                 self.assertEqual(store.counts()["ocr_field_candidates"], 3)
                 self.assertEqual(store.counts()["screen_observations"], 1)
                 self.assertEqual(store.counts()["card_masters"], 0)

@@ -34,7 +34,7 @@ public struct ObservedScreenStateClassifier: Sendable {
                 guard box.count == 4 else { return false }
                 let x = box[0] + box[2] / 2
                 let y = box[1] + box[3] / 2
-                return observation.confidence >= 0.3 && predicate(text, x, y)
+                return observation.confidence >= ScreenProfileContract.minimumAnchorConfidence && predicate(text, x, y)
             }
         }
 
@@ -48,12 +48,13 @@ public struct ObservedScreenStateClassifier: Sendable {
         if let title, let instruction, let reset, let save {
             let anchors = [title, instruction, reset, save]
             let confidence = anchors.map { $0.1.confidence }.min()
-            if let confidence, confidence >= 0.3 {
+            if let confidence, confidence >= ScreenProfileContract.minimumAnchorConfidence {
                 return ScreenClassification(
                     state: .pitcherOrder,
-                    status: confidence >= 0.85 ? .verified : .candidate,
+                    status: confidence >= ScreenProfileContract.verifiedConfidence ? .verified : .candidate,
                     confidence: confidence,
-                    anchorIndices: anchors.map(\.0)
+                    anchorIndices: anchors.map(\.0),
+                    profileVersion: ScreenProfileContract.version
                 )
             }
         }

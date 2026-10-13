@@ -41,6 +41,8 @@ public struct VisionOCRProcessor: FrameProcessor {
         return OCRDocument(screenState: resolved.state, frameSize: [image.width, image.height],
                            activePanel: activePanel, observations: observations,
                            screenStatus: resolved.status, screenConfidence: resolved.confidence,
-                           screenAnchorIndices: resolved.anchorIndices)
+                           screenAnchorIndices: resolved.anchorIndices,
+                           screenProfileVersion: resolved.profileVersion,
+                           ocrEngineVersion: VisionOCRContract.engineVersion)
     }
 }

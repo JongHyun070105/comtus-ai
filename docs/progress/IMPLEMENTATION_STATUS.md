@@ -2,6 +2,19 @@
 
 Updated: 2026-10-13
 
+## v0.2.1 actual-image verification pipeline — 2026-10-13
+
+- Implemented KBO-window two-digit year resolution. The six requested card labels resolve to 1983, 1992, 1998, 2000, 2007, and 2026. Unknown/ambiguous years preserve the raw token and candidate years as `UNRESOLVED`; current season is never substituted.
+- Navigation visits now key on screen state, player identity, detail page, and navigation goal. Collection deduplication is tracked separately. Mock tests cover batters 1–9, pitcher-to-batter switching, page return, same-player revisit, retry/depth limits, unexpected state/player, pause, and emergency stop.
+- OCR panel checks require whole-box containment with a safety margin; overlapping layouts are rejected. OVR association requires a labeled value inside a measured active card area. A separate `--field-panel` path crops per-card OCR while preserving full-frame state anchors.
+- Added optional local-only private PNG retention, SHA-256, mode 0700/0600, capture timestamp/window pixels/screen/OCR engine/ROI/OCR JSON linkage, image deletion reconciliation, and a 1 GiB total cap. Actual images and the comparison report stay ignored under `data/private-fixtures/`.
+- Added read-only V26 capture sessions with visible-window detection, small-animation-tolerant visual signatures, stable-frame OCR, deduplication, re-wait on absent windows, and capture/OCR latency, CPU, and missed-poll metrics. There is no game input adapter.
+- SQLite schema v4 aligns Swift/Python state/status contracts and adds private-image/session lifecycle records. The existing schema-v3 DB migrated with its historical rows preserved; a private verified backup is at `data/local-db-backups/comtus-ai-pre-v4-20261013.sqlite3`.
+- A real V26 pitcher-order overview was captured and stored. One first-starter card has 8 manual image-backed `CANDIDATE` fields and 2 append-only OCR corrections. `PITCHER_ORDER` is still only `CANDIDATE` (minimum anchor confidence 0.5); no player snapshot/card master was created and no field was promoted to `VERIFIED`.
+- Current SQLite counts: 9 capture records, 843 OCR observations, 9 screen observations, 71 field candidates, 5 private images, 2 correction rows; 46 historical field candidates lack original PNGs. Integrity check `ok`, foreign-key violations 0.
+- Python suite: 72/72 passed. Direct optimized Swift 6.4 source-matched compile and doctor passed. SwiftPM/XCTest remains blocked by host `sandbox-exec`; see [test results](TEST_RESULTS.md).
+- **Remaining minimum action:** user manually opens the first starter's pitcher-detail page while the read-only collector runs. That screen is needed to verify player identity/page, OVR, stats, skills, potential, and pitches. No live player is claimed as verified until then.
+
 ## v0.2 OCR and navigation continuation — 2026-10-13
 
 - Added schema v3 append-only `screen_observations` and `ocr_field_candidates`, local DB analysis, Korean card-label/year parsing, separated card-type/stars/enhancement/labelled-OVR candidates, field confidence/provenance, explicit panel roles, and unresolved card-instance identity.

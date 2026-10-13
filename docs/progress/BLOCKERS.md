@@ -1,5 +1,14 @@
 # Blockers and skips
 
+## v0.2.1 actual-image verification — 2026-10-13
+
+- **NEEDS USER ACTION — detailed first-starter verification:** a real `PITCHER_ORDER:CANDIDATE` screen and one card ROI were captured. The visible first-starter card fields are stored as manual `CANDIDATE`, with player/page identity unresolved. The user must open that card's pitcher-detail screen while `comtus-ai capture session --preserve-images` is running; the collector must not navigate or click.
+- **UNKNOWN — OVR and detailed fields:** the overview shows `100*`, but does not label it as pitcher OVR. Pitcher stats, skills/levels, potential/grade, and pitches/grades require the player-detail page and remain `UNKNOWN`.
+- **NOT_VERIFIABLE — OCR accuracy:** no labeled answer set exists, and v0.2's original PNGs are missing. No accuracy or error-rate comparison was calculated.
+- **BLOCKED — SwiftPM/XCTest:** `swift test --package-path apps/mac-capture -c release` fails at manifest sandboxing (`sandbox_apply: Operation not permitted`). Direct Swift compilation and runtime capture/OCR passed; no sandbox bypass was attempted.
+- **EXEC PASS — live read-only session:** V26 window enumeration, animation-tolerant stability, OCR, SQLite persistence, local image SHA/permissions, and capture/OCR/CPU/missed-poll metrics were exercised. No game input, match, currency use, or external transfer occurred.
+- **Historical candidates without images:** the four earlier image files are absent; the database retains 46 low-confidence candidate records with null values. They were not treated as image evidence.
+
 ## v0.2 OCR and navigation continuation — 2026-10-13
 
 - **NOT_VERIFIABLE — player extraction / OCR accuracy:** existing OCR rows have no original images for ground truth; parsed name/year/OVR/enhancement values remain null due confidence 0.5. No real card or player snapshot was promoted.

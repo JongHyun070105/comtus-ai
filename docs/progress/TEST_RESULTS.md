@@ -2,6 +2,28 @@
 
 Updated: 2026-10-13. `EXEC PASS` denotes an executed command; compiled-but-not-executed XCTest cases are not counted as passing tests.
 
+## v0.2.1 actual-image pipeline — 2026-10-13
+
+### EXEC PASS
+
+- Python full suite: `PYTHONPATH=packages/python/src .venv/bin/python -m unittest discover -s packages/python/tests -v` ran 72 tests; all 72 passed, including the existing Swift Vision synthetic integration. The original 53 tests remain present; the suite now has 19 additional regression/integration tests.
+- Direct Swift build: `.venv/bin/comtus-ai doctor` attempted SwiftPM first, then compiled the current source-hash-matched Release core and CLI with Swift 6.4 `swiftc -O`. The direct binary manifest matched the current Swift source and binary SHA-256. ScreenCaptureKit, Vision, and Screen Recording permission were available.
+- Swift/Python screen contract: shared fixture regression passed; a real captured pitcher-order screen classified identically in both implementations (`screen_profile_match=true`). Unverified profiles remain `UNKNOWN`.
+- Actual V26 window: read-only `capture list` found the visible `컴프야V26` window at 810×1112 points. No game input was sent.
+- Actual read-only capture session: latest run used 5 polls at 0.5 seconds, saw the V26 window on all 5 polls, captured 5 frames, waited for a stable visual signature, OCRed 1 frame, skipped 3 duplicates, and reported 2 missed polls. Capture p50/p95 were 354.9/369.0 ms; OCR p50/p95 were 795.3/795.3 ms; measured process+child CPU was 44.9%. No capture/OCR failures or classifier mismatches occurred.
+- Actual selected-card capture: full-frame OCR plus one measured card ROI was stored as image evidence. The screen is `PITCHER_ORDER:CANDIDATE` at confidence 0.5. The card's name/year and visible edition details are stored as manual `CANDIDATE` fields; OCR corrections are append-only. The local image-vs-text report is `data/private-fixtures/verification-report.md` and is git-ignored.
+- Private image retention: 5 PNGs are linked to SQLite evidence. Every file SHA-256 matched its DB value; every file is mode 0600 under a mode 0700 directory. Capture time, dimensions, screen state, OCR version, ROI, and OCR JSON are linked. The local store has a 1 GiB cap.
+- SQLite: schema v3→v4 migration passed after creating mode-0600 backup `data/local-db-backups/comtus-ai-pre-v4-20261013.sqlite3` (SHA-256 `6bacb2c7f1b459eb112f5a8d9acfbb9ba942dcf0817a0d5c6fe05777c8665aa8`). Existing evidence counts were preserved: 4 captures, 364 OCR observations, 4 screen observations, 46 field candidates. After live collection, v4 contains 9 captures, 843 OCR observations, 9 screen observations, 71 field candidates, and 2 correction rows. `PRAGMA integrity_check` returned `ok`; foreign-key violations: 0.
+- Data status: 8 manual image-backed candidates are recorded for one selected starter card; 25 field candidates now link to preserved images and 46 historical candidates have no remaining PNG. There are 0 verified player snapshots and 0 card masters/instances. No historical image was assumed to exist.
+- `git diff --check`, Python `compileall`, and `comtus-ai db init` passed. The migration/init is idempotent at schema v4.
+
+### STATIC / SKIP / BLOCKED
+
+- **BLOCKED — SwiftPM/XCTest:** `swift test --package-path apps/mac-capture -c release` still fails before manifest evaluation with `sandbox-exec: sandbox_apply: Operation not permitted`. No sandbox bypass was used. The XCTest target did not execute; Python's shared screen-contract regression passed.
+- **NEEDS USER ACTION — player-detail verification:** the visible screen is the pitcher-order overview, not a player-detail page. The selected card's name/year, LIVE V2 type, five stars, +5 enhancement, and `100*` display are only `CANDIDATE`. `100*` is not promoted to pitcher OVR because this overview has no explicit OVR label. Stats, skills, potential, and pitches remain `UNKNOWN`; verified player count is 0. The minimum next step is for the user to open the first starter's pitcher-detail screen while `comtus-ai capture session --preserve-images` runs.
+- Korean OCR accuracy and v0.2 accuracy delta are `NOT_VERIFIABLE`: there is no labeled ground-truth image set. No accuracy/error-rate claim is made.
+- Actual game input remains absent. The capture session only reads the V26 window and never clicks, consumes game currency, or starts a match.
+
 ## v0.2 OCR and navigation continuation — 2026-10-13
 
 ### EXEC PASS

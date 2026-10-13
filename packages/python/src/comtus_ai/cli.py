@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import base64
+from dataclasses import asdict
+from datetime import datetime, timezone
 import hashlib
 import json
 import os
@@ -16,11 +19,26 @@ from typing import Any
 from . import __version__
 from .database import SQLiteStore
 from .database.store import default_database_path
+from .capture_session import (
+    CaptureSessionConfig,
+    CaptureWindow,
+    CapturedFrame,
+    ReadOnlyCaptureSession,
+)
 from .models import EvidenceSource
 from .observations import OCRObservation, load_ocr_document
+from .private_fixtures import PrivateFixtureMetadata, PrivateFixtureStore
 from .optimizer import Opponent, Pitcher, optimize_rotation
 from .parsing import parse_ocr_fields
-from .screens import NormalizedRect, recognize_screen
+from .screens import (
+    SCREEN_PROFILE_VERSION,
+    ClassificationStatus,
+    NormalizedRect,
+    ScreenClassification,
+    ScreenState,
+    classifier_payload_matches,
+    recognize_screen,
+)
 
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
@@ -55,11 +73,83 @@ def _swift_environment(command: list[str]) -> dict[str, str]:
     return environment
 
 
+class _SwiftCaptureAdapter:
+    def __init__(self, swift_binary: str):
+        self.swift_binary = swift_binary
+        self.environment = _swift_environment([swift_binary])
+        self.temporary_root = REPO_ROOT / "data" / ".capture-session"
+        self.temporary_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        os.chmod(self.temporary_root, 0o700)
+
+    def _run_json(self, arguments: list[str]) -> dict[str, Any]:
+        result = subprocess.run([self.swift_binary, *arguments], cwd=REPO_ROOT, env=self.environment,
+                                check=False, capture_output=True, text=True)
+        output = result.stdout or result.stderr
+        try:
+            value = json.loads(output)
+        except json.JSONDecodeError as error:
+            raise RuntimeError(f"Swift capture command returned invalid JSON (exit={result.returncode})") from error
+        if result.returncode != 0:
+            raise RuntimeError(value.get("message", f"Swift capture command failed ({result.returncode})"))
+        if not isinstance(value, dict):
+            raise RuntimeError("Swift capture command returned an unexpected document")
+        return value
+
+    def list_windows(self) -> list[CaptureWindow]:
+        response = self._run_json(["windows"])
+        return [CaptureWindow(
+            window_id=int(item["window_id"]), process_name=item.get("process_name"), title=item.get("title"),
+            width_points=float(item["width_points"]), height_points=float(item["height_points"]),
+            on_screen=bool(item.get("on_screen", True)),
+        ) for item in response.get("windows", [])]
+
+    def capture_window(self, window_id: int) -> CapturedFrame:
+        with tempfile.TemporaryDirectory(prefix="capture-", dir=self.temporary_root) as temporary:
+            output = Path(temporary) / "frame.png"
+            response = self._run_json(["capture", "--window-id", str(window_id), "--output", str(output),
+                                       "--visual-signature"])
+            encoded_signature = response.get("visual_signature")
+            visual_signature = base64.b64decode(encoded_signature, validate=True) if encoded_signature else None
+            return CapturedFrame(output.read_bytes(), int(response["width_pixels"]),
+                                 int(response["height_pixels"]), str(response["captured_at"]), visual_signature)
+
+    def run_ocr(self, image_bytes: bytes) -> dict[str, Any]:
+        with tempfile.TemporaryDirectory(prefix="ocr-", dir=self.temporary_root) as temporary:
+            image = Path(temporary) / "frame.png"
+            image.write_bytes(image_bytes)
+            os.chmod(image, 0o600)
+            return self._run_json(["ocr", "--image", str(image), "--screen-state", "UNKNOWN"])
+
+
+def _run_capture_session(args: argparse.Namespace) -> int:
+    command = _prepare_swift_command(["windows"])
+    if command is None:
+        print("BLOCKED: no source-matched Swift CLI binary could be built.", file=sys.stderr)
+        return 2
+    adapter = _SwiftCaptureAdapter(command[0])
+    config = CaptureSessionConfig(
+        poll_interval_seconds=args.interval,
+        stable_samples=args.stable_samples,
+        preserve_images=args.preserve_images,
+        private_fixture_root=REPO_ROOT / "data" / "private-fixtures" if args.preserve_images else None,
+    )
+    with _database(args.database) as store:
+        report = ReadOnlyCaptureSession(adapter, store, config).run(max_polls=args.max_polls)
+    _print_json(asdict(report))
+    return 0 if report.status == "EXEC_PASS" else 2
+
+
 def _run_swift_ocr(args: argparse.Namespace) -> int:
+    if args.field_panel and not args.store:
+        print("--field-panel requires --store so its bounds remain linked to field candidates.", file=sys.stderr)
+        return 2
     command = ["ocr", "--image", str(args.image), "--screen-state", args.screen_state]
     if args.active_panel:
         command += ["--active-panel", *(str(value) for value in args.active_panel)]
     if not args.store:
+        if getattr(args, "preserve_image", False):
+            print("--preserve-image requires --store so the private image remains linked to SQLite evidence.", file=sys.stderr)
+            return 2
         return _run_swift(command)
 
     swift_command = _prepare_swift_command(command)
@@ -76,7 +166,37 @@ def _run_swift_ocr(args: argparse.Namespace) -> int:
         return result.returncode
 
     document = json.loads(result.stdout)
-    observations = load_ocr_document(result.stdout)
+    full_frame_observation_count = len(document.get("observations", []))
+    field_observation_offset = 0
+    if args.field_panel:
+        roi_command = ["ocr", "--image", str(args.image), "--screen-state", "UNKNOWN",
+                       "--active-panel", *(str(value) for value in args.field_panel)]
+        roi_swift_command = _prepare_swift_command(roi_command)
+        if roi_swift_command is None:
+            print("BLOCKED: no source-matched Swift CLI binary could be built.", file=sys.stderr)
+            return 2
+        roi_result = subprocess.run(roi_swift_command, cwd=REPO_ROOT, env=_swift_environment(roi_swift_command),
+                                    check=False, capture_output=True, text=True)
+        if roi_result.returncode != 0:
+            print(roi_result.stderr or roi_result.stdout, file=sys.stderr)
+            return roi_result.returncode
+        roi_document = json.loads(roi_result.stdout)
+        roi_observations = roi_document.get("observations", [])
+        document["observations"].extend(roi_observations)
+        document["field_roi_observation_count"] = len(roi_observations)
+        field_observation_offset = full_frame_observation_count
+        field_observations_document = dict(document)
+        field_observations_document["observations"] = roi_observations
+        field_observations = load_ocr_document(json.dumps(field_observations_document, ensure_ascii=False))
+    else:
+        field_observations = None
+    observations = load_ocr_document(json.dumps(document, ensure_ascii=False))
+    active_panel_values = document.get("active_panel")
+    active_panel = NormalizedRect(*active_panel_values) if active_panel_values else None
+    field_panel = NormalizedRect(*args.field_panel) if args.field_panel else active_panel
+    document["extraction_panel"] = (
+        [field_panel.x, field_panel.y, field_panel.width, field_panel.height] if field_panel else None
+    )
     image_bytes = args.image.read_bytes()
     media_type = "image/jpeg" if args.image.suffix.lower() in {".jpg", ".jpeg"} else "image/png"
     digest = hashlib.sha256(image_bytes).hexdigest()
@@ -95,6 +215,12 @@ def _run_swift_ocr(args: argparse.Namespace) -> int:
             observation_ids.append(observation_id)
             inserted_count += int(inserted)
         classification = recognize_screen(observations)
+        screen_profile_match = classifier_payload_matches(document, classification)
+        if not screen_profile_match:
+            classification = ScreenClassification(
+                ScreenState.UNKNOWN, ClassificationStatus.UNKNOWN, None,
+                profile_version=SCREEN_PROFILE_VERSION,
+            )
         document["screen_state"] = classification.state.value
         document["screen_status"] = classification.status.value
         document["screen_confidence"] = classification.confidence
@@ -105,22 +231,25 @@ def _run_swift_ocr(args: argparse.Namespace) -> int:
             profile_version=classification.profile_version,
             anchor_indices=list(classification.anchor_indices),
             panel_layout=(
-                {"active": document.get("active_panel"), "left_preview": None, "right_preview": None}
-                if document.get("active_panel") is not None else None
+                {"active": document["extraction_panel"], "left_preview": None, "right_preview": None}
+                if field_panel is not None else None
             ),
         )
-        active_panel_value = document.get("active_panel")
-        active_panel = NormalizedRect(*active_panel_value) if active_panel_value else None
-        field_candidates = parse_ocr_fields(observations, active_panel=active_panel)
+        candidate_observations = field_observations if field_observations is not None else observations
+        field_candidates = parse_ocr_fields(candidate_observations, active_panel=field_panel)
         field_candidate_ids: list[int] = []
         field_candidates_inserted = 0
         for candidate in field_candidates:
             if not candidate.observation_indices:
                 continue
             primary = candidate.observation_indices[0]
+            primary += field_observation_offset
             if primary >= len(observation_ids):
                 continue
             context = candidate.context_dict()
+            if field_observation_offset:
+                context["observation_indices"] = [index + field_observation_offset
+                                                  for index in candidate.observation_indices]
             context.update({
                 "screen_observation_id": screen_id,
                 "screen_state": classification.state.value,
@@ -136,6 +265,26 @@ def _run_swift_ocr(args: argparse.Namespace) -> int:
             )
             field_candidate_ids.append(candidate_id)
             field_candidates_inserted += int(candidate_inserted)
+        private_image_path = None
+        if args.preserve_image:
+            frame_size = document.get("frame_size") or []
+            if len(frame_size) != 2:
+                raise ValueError("OCR document is missing its frame dimensions")
+            captured_at = args.captured_at or datetime.fromtimestamp(
+                args.image.stat().st_mtime, timezone.utc,
+            ).isoformat()
+            metadata = PrivateFixtureMetadata(
+                captured_at=captured_at,
+                window_size=(int(frame_size[0]), int(frame_size[1])),
+                screen_state=classification.state,
+                ocr_engine_version=document.get("ocr_engine_version", "Vision-VNRecognizeTextRequestRevision3"),
+                roi=(tuple(document["extraction_panel"]) if document.get("extraction_panel")
+                     else tuple(document["active_panel"]) if document.get("active_panel") else None),
+                ocr_document=document,
+            )
+            private_image_path, _ = PrivateFixtureStore(
+                store, REPO_ROOT / "data" / "private-fixtures",
+            ).save(evidence_id=evidence_id, image_bytes=image_bytes, metadata=metadata)
     document["persistence"] = {
         "status": "EXEC_PASS",
         "capture_evidence_id": evidence_id,
@@ -147,10 +296,12 @@ def _run_swift_ocr(args: argparse.Namespace) -> int:
         "screen_observation_inserted": screen_inserted,
         "screen_state": classification.state.value,
         "screen_state_status": classification.status.value,
+        "screen_profile_match": screen_profile_match,
         "field_candidate_ids": field_candidate_ids,
         "field_candidates_inserted": field_candidates_inserted,
         "player_snapshots_created": 0,
         "source": args.evidence_source,
+        "private_image_path": str(private_image_path) if private_image_path else None,
     }
     _print_json(document)
     return 0
@@ -484,11 +635,22 @@ def build_parser() -> argparse.ArgumentParser:
     once = capture.add_parser("once", help="Capture one frame from a selected window")
     once.add_argument("--window-id", required=True, type=int)
     once.add_argument("--output", type=Path, default=REPO_ROOT / "data" / "captures" / "frame.png")
+    session = capture.add_parser("session", help="Watch V26 frames and collect changed stable screens without input")
+    session.add_argument("--interval", type=float, default=0.5, help="Seconds between read-only window captures")
+    session.add_argument("--stable-samples", type=int, default=2, help="Identical consecutive frames before OCR")
+    session.add_argument("--max-polls", type=int, help="Optional poll limit; otherwise wait until interrupted")
+    session.add_argument("--preserve-images", action="store_true", help="Keep images locally under the bounded private fixture store")
+    session.add_argument("--database", type=Path, default=DATABASE_PATH)
     ocr = capture.add_parser("ocr", help="Run Vision OCR on a local image")
     ocr.add_argument("image", type=Path)
     ocr.add_argument("--active-panel", nargs=4, type=float, metavar=("X", "Y", "W", "H"), help="Normalized active-panel ROI")
+    ocr.add_argument("--field-panel", nargs=4, type=float, metavar=("X", "Y", "W", "H"),
+                     help="Normalized card region used for field extraction while Vision reads the full frame")
     ocr.add_argument("--screen-state", choices=("HOME", "RANKING_LOBBY", "PITCHER_ORDER", "OPPONENT_LINEUP", "OPPONENT_STARTING_PITCHER_DETAIL", "PLAYER_DETAIL_BATTER", "PLAYER_DETAIL_PITCHER", "TEAM_ROSTER", "SYNERGY", "POSITION_TRAINING", "MATCH_RESULT", "UNKNOWN"), default="UNKNOWN")
     ocr.add_argument("--store", action="store_true", help="Store capture hash and OCR observations in SQLite")
+    ocr.add_argument("--preserve-image", action="store_true",
+                     help="Optionally retain this original image locally under data/private-fixtures (requires --store)")
+    ocr.add_argument("--captured-at", help="ISO-8601 capture time; defaults to the source image file modification time")
     ocr.add_argument("--evidence-source", choices=tuple(source.value for source in EvidenceSource), default=EvidenceSource.UNKNOWN.value,
                      help="Provenance label for a stored capture; defaults to UNKNOWN")
     ocr.add_argument("--database", type=Path, default=DATABASE_PATH, help="SQLite path used with --store")
@@ -542,8 +704,14 @@ def main(argv: list[str] | None = None) -> int:
             if args.capture_command == "list":
                 return _run_swift(["windows"])
             if args.capture_command == "once":
-                args.output.parent.mkdir(parents=True, exist_ok=True)
+                data_root = (REPO_ROOT / "data").resolve()
+                output_parent = args.output.parent.resolve()
+                if output_parent == data_root or data_root in output_parent.parents:
+                    output_parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+                    os.chmod(output_parent, 0o700)
                 return _run_swift(["capture", "--window-id", str(args.window_id), "--output", str(args.output)])
+            if args.capture_command == "session":
+                return _run_capture_session(args)
             if args.capture_command == "ocr":
                 return _run_swift_ocr(args)
         if args.command == "roster" and args.roster_command == "show":
