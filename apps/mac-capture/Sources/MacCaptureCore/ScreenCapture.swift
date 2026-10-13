@@ -24,6 +24,21 @@ public enum FrameVisualSignature {
         }
         return created ? Data(pixels) : nil
     }
+
+    public static func makeKeyRegion(_ image: CGImage, width: Int = 192, height: Int = 264) -> Data? {
+        let regionY = CGFloat(image.height) * 0.12
+        let regionHeight = CGFloat(image.height) * 0.82
+        let leftRegion = CGRect(x: CGFloat(image.width) * 0.12, y: regionY,
+                                width: CGFloat(image.width) * 0.32, height: regionHeight).integral
+        let rightRegion = CGRect(x: CGFloat(image.width) * 0.56, y: regionY,
+                                 width: CGFloat(image.width) * 0.32, height: regionHeight).integral
+        guard let leftCrop = image.cropping(to: leftRegion), let rightCrop = image.cropping(to: rightRegion),
+              let leftSignature = make(leftCrop, width: width / 2, height: height),
+              let rightSignature = make(rightCrop, width: width / 2, height: height) else { return nil }
+        var signature = leftSignature
+        signature.append(rightSignature)
+        return signature
+    }
 }
 
 public struct ScreenCaptureFrameSource: FrameSource {
@@ -39,6 +54,7 @@ public struct ScreenCaptureFrameSource: FrameSource {
                                  title: window.title,
                                  processName: window.owningApplication?.applicationName,
                                  processID: window.owningApplication?.processID,
+                                 bundleIdentifier: window.owningApplication?.bundleIdentifier,
                                  widthPoints: window.frame.width,
                                  heightPoints: window.frame.height,
                                  onScreen: window.isOnScreen)
@@ -47,10 +63,25 @@ public struct ScreenCaptureFrameSource: FrameSource {
     }
 
     public func capture(windowID: UInt32) async throws -> CGImage {
+        try await capture(windowID: windowID, expectedProcessID: nil, expectedBundleIdentifier: nil)
+    }
+
+    public func capture(windowID: UInt32, expectedProcessID: Int32?,
+                        expectedBundleIdentifier: String?) async throws -> CGImage {
         try requireScreenRecordingPermission()
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
         guard let window = content.windows.first(where: { $0.windowID == windowID }) else {
             throw CaptureFailure.gameWindowNotFound(windowID)
+        }
+        guard CaptureWindowIdentity.matches(
+            windowID: window.windowID,
+            processID: window.owningApplication?.processID,
+            bundleIdentifier: window.owningApplication?.bundleIdentifier,
+            expectedWindowID: windowID,
+            expectedProcessID: expectedProcessID,
+            expectedBundleIdentifier: expectedBundleIdentifier
+        ) else {
+            throw CaptureFailure.windowIdentityChanged(windowID)
         }
         let filter = SCContentFilter(desktopIndependentWindow: window)
         let configuration = SCStreamConfiguration()

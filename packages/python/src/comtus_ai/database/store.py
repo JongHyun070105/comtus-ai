@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import hashlib
 import json
+import math
 from pathlib import Path
 import sqlite3
 from typing import Any
@@ -622,6 +624,214 @@ class SQLiteStore:
     def save_player_snapshot(self, *, account_id: int, card_instance_id: int, payload: dict[str, Any], source_type: EvidenceSource | str,
                              confidence: float | None = None, observed_at: str | None = None, mode: str | None = None,
                              rules_version: str | None = None, game_version: str | None = None) -> tuple[int, bool]:
+        if str(source_type) == EvidenceSource.SCREEN_CAPTURE_VERIFIED.value:
+            raise ValueError("verified capture snapshots must use save_verified_player_snapshot with image and field proofs")
+        return self._save_player_snapshot(
+            account_id=account_id, card_instance_id=card_instance_id, payload=payload, source_type=source_type,
+            confidence=confidence, observed_at=observed_at, mode=mode, rules_version=rules_version,
+            game_version=game_version,
+        )
+
+    def save_verified_player_snapshot(
+        self, *, account_id: int, card_instance_id: int, payload: dict[str, Any], identity: dict[str, Any],
+        page_proofs: list[dict[str, Any]], field_proofs: dict[str, dict[str, Any]],
+        confidence: float | None = None, observed_at: str | None = None, mode: str | None = None,
+        rules_version: str | None = None, game_version: str | None = None,
+        manual_review: list[str] | None = None, contradictions: list[str] | None = None,
+    ) -> tuple[int, bool]:
+        """Persist a partial capture snapshot only after image-backed identity and field review."""
+        validate_confidence(confidence)
+        if not payload or set(payload) != set(field_proofs):
+            raise ValueError("snapshot payload must contain only explicitly verified fields")
+        if manual_review or contradictions:
+            raise ValueError("manual-review or contradictory fields cannot be promoted")
+        if identity.get("status") != "VERIFIED" or identity.get("reviewed_from_image") is not True:
+            raise ValueError("player and card identity must be reviewed and VERIFIED against an image")
+        player_key = identity.get("player_key")
+        if not isinstance(player_key, str) or not player_key.strip():
+            raise ValueError("verified identity requires a stable player key")
+        canonical_name = identity.get("canonical_name")
+        season_year = identity.get("season_year")
+        card_type = identity.get("card_type")
+        if (not isinstance(canonical_name, str) or not canonical_name.strip()
+                or not isinstance(season_year, int) or season_year < 1900
+                or not isinstance(card_type, str) or card_type in ("", "UNKNOWN")):
+            raise ValueError("verified player identity requires a known name, season, and card type")
+        master = self.connection.execute(
+            """SELECT cm.canonical_name,cm.season_year,cm.card_type,ci.stars,ci.live_version,ci.enhancement
+               FROM card_instances ci JOIN card_masters cm ON cm.id=ci.card_master_id
+               WHERE ci.id=? AND ci.account_id=?""", (card_instance_id, account_id),
+        ).fetchone()
+        if master is None:
+            raise sqlite3.IntegrityError("card instance does not belong to the requested account")
+        for key in ("canonical_name", "season_year", "card_type"):
+            if identity.get(key) != master[key]:
+                raise ValueError(f"verified {key} does not match the card master")
+        for key in ("stars", "live_version", "enhancement"):
+            if key in identity and identity[key] != master[key]:
+                raise ValueError(f"verified {key} does not match the card instance")
+
+        if len(page_proofs) < 2:
+            raise ValueError("player identity must match across at least two detail pages")
+        page_by_number: dict[int, dict[str, Any]] = {}
+        evidence_ids: set[int] = set()
+        screen_ids: set[int] = set()
+        for proof in page_proofs:
+            page = proof.get("page")
+            if (proof.get("status") != "VERIFIED" or proof.get("reviewed_from_image") is not True
+                    or proof.get("player_key") != player_key
+                    or proof.get("canonical_name") != identity["canonical_name"]
+                    or page not in (1, 2, 3) or page in page_by_number):
+                raise ValueError("detail-page proofs must verify one player on distinct pages 1...3")
+            evidence_id = int(proof["evidence_id"])
+            screen_id = int(proof["screen_observation_id"])
+            if evidence_id in evidence_ids or screen_id in screen_ids:
+                raise ValueError("each verified page requires its own image and screen observation")
+            screen = self.connection.execute(
+                "SELECT evidence_id,screen_state,status,panel_layout_json FROM screen_observations WHERE id=?",
+                (screen_id,),
+            ).fetchone()
+            if (screen is None or int(screen["evidence_id"]) != evidence_id
+                    or screen["screen_state"] != "PLAYER_DETAIL_PITCHER" or screen["status"] != "VERIFIED"):
+                raise ValueError("page proof must link to a verified pitcher-detail screen")
+            active_panel = json.loads(screen["panel_layout_json"] or "{}").get("active")
+            if not isinstance(active_panel, list) or len(active_panel) != 4:
+                raise ValueError("verified pitcher page must have a measured active panel")
+            panel_x, panel_y, panel_width, panel_height = active_panel
+            if (any(not isinstance(value, (int, float)) or not math.isfinite(value) for value in active_panel)
+                    or panel_x < 0 or panel_y < 0 or panel_width <= 0 or panel_height <= 0
+                    or panel_x + panel_width > 1 or panel_y + panel_height > 1):
+                raise ValueError("active panel bounds must be a valid normalized image region")
+            self._require_preserved_capture(evidence_id)
+            identity_observation_id = int(proof["identity_observation_id"])
+            identity_observation = self.connection.execute(
+                "SELECT evidence_id,text,bbox_json,source_type,confidence FROM ocr_observations WHERE id=?",
+                (identity_observation_id,),
+            ).fetchone()
+            year = str(season_year)
+            short_year = f"'{season_year % 100:02d}"
+            curly_short_year = f"’{season_year % 100:02d}"
+            if (identity_observation is None or int(identity_observation["evidence_id"]) != evidence_id
+                    or identity_observation["source_type"] != EvidenceSource.SCREEN_CAPTURE_VERIFIED.value
+                    or identity_observation["confidence"] is None or identity_observation["confidence"] < 0.85
+                    or canonical_name not in identity_observation["text"]
+                    or not any(marker in identity_observation["text"]
+                               for marker in (year, short_year, curly_short_year))
+                    or not self._bbox_inside_panel(identity_observation["bbox_json"], active_panel)):
+                raise ValueError("each detail page must link to an image-backed player name and season observation")
+            page_by_number[page] = {**proof, "evidence_id": evidence_id, "screen_observation_id": screen_id,
+                                    "identity_observation_id": identity_observation_id,
+                                    "active_panel": active_panel}
+            evidence_ids.add(evidence_id)
+            screen_ids.add(screen_id)
+
+        if "_verification" in payload:
+            raise ValueError("_verification is reserved for capture provenance")
+        verified_fields: dict[str, dict[str, Any]] = {}
+        corrections: list[tuple[int, str, str, str]] = []
+        for field_key, proof in field_proofs.items():
+            if proof.get("status") != "VERIFIED" or proof.get("reviewed_from_image") is not True:
+                raise ValueError(f"field {field_key} must be explicitly verified against its image")
+            if "value" not in proof or proof["value"] is None or payload[field_key] != proof["value"]:
+                raise ValueError(f"field {field_key} must store only its verified non-empty value")
+            validate_confidence(proof.get("confidence"))
+            if proof.get("confidence") is None:
+                raise ValueError(f"field {field_key} requires a recorded confidence")
+            page = proof.get("page")
+            page_proof = page_by_number.get(page)
+            if (page_proof is None or proof.get("player_key") != player_key
+                    or proof.get("panel_role") != "ACTIVE"
+                    or int(proof.get("evidence_id", -1)) != page_proof["evidence_id"]
+                    or int(proof.get("screen_observation_id", -1)) != page_proof["screen_observation_id"]):
+                raise ValueError(f"field {field_key} must belong to the verified active player panel")
+            observation_id = int(proof["observation_id"])
+            observation = self.connection.execute(
+                "SELECT evidence_id,text,bbox_json,source_type FROM ocr_observations WHERE id=?",
+                (observation_id,),
+            ).fetchone()
+            if (observation is None or int(observation["evidence_id"]) != page_proof["evidence_id"]
+                    or observation["source_type"] != EvidenceSource.SCREEN_CAPTURE_VERIFIED.value
+                    or proof.get("ocr_text") != observation["text"]):
+                raise ValueError(f"field {field_key} must link to the reviewed OCR observation")
+            if not self._bbox_inside_panel(observation["bbox_json"], page_proof["active_panel"]):
+                raise ValueError(f"field {field_key} falls outside the active panel")
+            correction_reason = proof.get("correction_reason")
+            corrected_by = proof.get("corrected_by")
+            if str(proof["value"]) != observation["text"]:
+                if not isinstance(correction_reason, str) or not correction_reason.strip() or not isinstance(corrected_by, str) or not corrected_by.strip():
+                    raise ValueError(f"field {field_key} needs a recorded reason and reviewer for manual correction")
+                corrections.append((observation_id, str(proof["value"]), correction_reason, corrected_by))
+            verified_fields[field_key] = {
+                "value": proof["value"], "confidence": proof.get("confidence"),
+                "evidence_id": page_proof["evidence_id"], "observation_id": observation_id,
+                "screen_observation_id": page_proof["screen_observation_id"], "page": page,
+                "player_key": player_key, "panel_role": "ACTIVE", "ocr_text": observation["text"],
+            }
+
+        stored_payload = dict(payload)
+        stored_payload["_verification"] = {
+            "status": "VERIFIED", "player_key": player_key,
+            "identity": {key: identity[key] for key in
+                         ("canonical_name", "season_year", "card_type", "stars", "live_version", "enhancement")
+                         if key in identity},
+            "page_proofs": [{key: page_by_number[page][key] for key in
+                             ("page", "player_key", "canonical_name", "evidence_id", "screen_observation_id",
+                              "identity_observation_id")}
+                            for page in sorted(page_by_number)],
+            "field_proofs": verified_fields,
+        }
+        for observation_id, corrected_text, reason, corrected_by in corrections:
+            exists = self.connection.execute(
+                "SELECT 1 FROM ocr_corrections WHERE observation_id=? AND corrected_text=? AND reason=? AND corrected_by=?",
+                (observation_id, corrected_text, reason, corrected_by),
+            ).fetchone()
+            if exists is None:
+                self.connection.execute(
+                    "INSERT INTO ocr_corrections(observation_id,corrected_text,reason,corrected_by,created_at) VALUES(?,?,?,?,?)",
+                    (observation_id, corrected_text, reason, corrected_by, utc_now()),
+                )
+        try:
+            result = self._save_player_snapshot(
+                account_id=account_id, card_instance_id=card_instance_id, payload=stored_payload,
+                source_type=EvidenceSource.SCREEN_CAPTURE_VERIFIED, confidence=confidence,
+                observed_at=observed_at, mode=mode, rules_version=rules_version, game_version=game_version,
+            )
+            self.connection.commit()
+            return result
+        except Exception:
+            self.connection.rollback()
+            raise
+
+    def _require_preserved_capture(self, evidence_id: int) -> None:
+        row = self.connection.execute(
+            """SELECT e.sha256,e.source_type,e.media_type,a.relative_path,a.sha256 AS asset_sha256,a.status
+               FROM capture_evidence e JOIN private_fixture_assets a ON a.evidence_id=e.id WHERE e.id=?""",
+            (evidence_id,),
+        ).fetchone()
+        if (row is None or row["source_type"] != EvidenceSource.SCREEN_CAPTURE_VERIFIED.value
+                or row["media_type"] != "image/png" or row["status"] != "PRESENT"
+                or row["sha256"] != row["asset_sha256"]):
+            raise ValueError("verified snapshots require a preserved original PNG linked to the evidence ID")
+        relative_path = Path(row["relative_path"])
+        root = self.path.parent.parent.resolve()
+        if relative_path.is_absolute() or ".." in relative_path.parts:
+            raise ValueError("private image path is outside the project evidence root")
+        image_path = (root / relative_path).resolve()
+        if root not in image_path.parents or image_path.is_symlink() or not image_path.is_file():
+            raise ValueError("preserved original image is missing or outside the evidence root")
+        if hashlib.sha256(image_path.read_bytes()).hexdigest() != row["sha256"]:
+            raise ValueError("preserved original image SHA-256 does not match the evidence record")
+
+    @staticmethod
+    def _bbox_inside_panel(bbox_json: str, panel: list[float]) -> bool:
+        x, y, width, height = json.loads(bbox_json)
+        panel_x, panel_y, panel_width, panel_height = panel
+        return (x >= panel_x and y >= panel_y and x + width <= panel_x + panel_width
+                and y + height <= panel_y + panel_height)
+
+    def _save_player_snapshot(self, *, account_id: int, card_instance_id: int, payload: dict[str, Any], source_type: EvidenceSource | str,
+                              confidence: float | None = None, observed_at: str | None = None, mode: str | None = None,
+                              rules_version: str | None = None, game_version: str | None = None) -> tuple[int, bool]:
         validate_confidence(confidence)
         owner = self.connection.execute("SELECT account_id FROM card_instances WHERE id=?", (card_instance_id,)).fetchone()
         if owner is None or int(owner[0]) != account_id:

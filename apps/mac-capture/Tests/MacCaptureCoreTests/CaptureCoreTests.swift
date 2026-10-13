@@ -29,6 +29,21 @@ private struct ScreenClassificationFixtureExpected: Decodable {
 }
 
 final class CaptureCoreTests: XCTestCase {
+    func testCaptureWindowMustKeepTheDiscoveredWindowProcessAndBundleIdentity() {
+        XCTAssertTrue(CaptureWindowIdentity.matches(
+            windowID: 12, processID: 81562, bundleIdentifier: "com.com2us.futurecpb.ios.apple.global.normal",
+            expectedWindowID: 12, expectedProcessID: 81562,
+            expectedBundleIdentifier: "com.com2us.futurecpb.ios.apple.global.normal"))
+        XCTAssertFalse(CaptureWindowIdentity.matches(
+            windowID: 12, processID: 81563, bundleIdentifier: "com.com2us.futurecpb.ios.apple.global.normal",
+            expectedWindowID: 12, expectedProcessID: 81562,
+            expectedBundleIdentifier: "com.com2us.futurecpb.ios.apple.global.normal"))
+        XCTAssertFalse(CaptureWindowIdentity.matches(
+            windowID: 12, processID: 81562, bundleIdentifier: "com.example.terminal",
+            expectedWindowID: 12, expectedProcessID: 81562,
+            expectedBundleIdentifier: "com.com2us.futurecpb.ios.apple.global.normal"))
+    }
+
     func testDetailArrowSemanticsKeepPlayerSwitchSeparateFromPageChange() throws {
         var state = try PlayerDetailNavigation(kind: .pitcher, page: 1)
         try state.apply(.topRightSwitchPlayerNext)

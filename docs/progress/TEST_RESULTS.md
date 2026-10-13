@@ -2,7 +2,25 @@
 
 Updated: 2026-10-13. `EXEC PASS` denotes an executed command; compiled-but-not-executed XCTest cases are not counted as passing tests.
 
-## v0.2.1 actual-image pipeline — 2026-10-13
+## v0.2.2 current validation — 2026-10-13
+
+### EXEC PASS
+
+- Python full suite: `PYTHONPATH=packages/python/src .venv/bin/python -m unittest discover -s packages/python/tests -v` ran 81 tests; all 81 passed. This adds exact process/bundle filtering, larger-terminal exclusion, ambiguity refusal, PID replacement, small-number/page/player changes, animated-frame dedup, image-to-OCR evidence, verified partial snapshot, and unverified-field refusal coverage.
+- Read-only real capture: ScreenCaptureKit matched only process `V26` with bundle `com.com2us.futurecpb.ios.apple.global.normal`, PID 81562, window ID 82657. The selected game window was 810×1112pt; a larger iTerm2 window was not eligible. PID and bundle identity are checked again in the actual capture call.
+- Latest `capture session --preserve-images --max-polls 4`: `EXEC_PASS`, 4 polls/frames, 1 OCR frame, 2 duplicate frames, 0 ambiguous polls, 0 failures, 88 OCR observations, and 7 field candidates. Capture p50/p95 379.4/396.6 ms; OCR p50/p95 770.7/770.7 ms; process+child CPU 61.4%; 8 missed polls. These timings measure this host's capture/OCR work, not game FPS.
+- Direct image review: the screen is the pitcher-order overview, `PITCHER_ORDER:CANDIDATE` at 0.5 confidence. `후라도'26`, LIVE V2, five stars, and +5 are overview-only candidates. The visible `100*` is not confirmed as OVR. No requested pitcher-detail page, stats, skills, potential, or pitch grades were captured.
+- Local SQLite schema v4 now contains 20 capture records, 1,835 OCR observations, 20 screen observations, 144 field candidates, 16 private images, and 2 append-only correction rows. `PRAGMA integrity_check` is `ok`; foreign-key violations: 0. The local verified player snapshot count remains 0; card masters and account card instances remain 0. The earlier 9 captures/843 OCR observations were retained.
+- Verified partial-snapshot API tests pass with two verified image-backed pages and one confirmed field; replaying the same evidence is idempotent. A `CANDIDATE` field and direct generic `SCREEN_CAPTURE_VERIFIED` promotion are rejected. This is synthetic test evidence, not a real Hurado snapshot. No schema migration was needed.
+- `git diff --check` passes. Private PNGs and the SQLite database remain under Git-ignored `data/` paths.
+
+### STATIC / SKIP / BLOCKED
+
+- **BLOCKED — SwiftPM/XCTest:** `swift test --package-path apps/mac-capture -c release` stops before manifest evaluation with `sandbox-exec: sandbox_apply: Operation not permitted`. No bypass was used for the test gate; XCTest did not execute. The capture CLI's built-in source-matched Swift compiler fallback enabled the separately requested read-only capture, but is not counted as an XCTest pass.
+- **NEEDS USER ACTION — actual player detail:** the current visible page is the pitcher-order overview. Automatic game UI input remains disabled, so the user must open pitcher-detail pages 1–3 before actual field verification can continue. Until then: verified fields 0; player snapshots 0; visible card facts stay `CANDIDATE`; OVR/stats/skills/potential/pitches stay `UNKNOWN`.
+- Korean OCR accuracy remains `NOT_VERIFIABLE`; no labeled detail-page ground truth is available.
+
+## Historical — v0.2.1 actual-image pipeline — 2026-10-13
 
 ### EXEC PASS
 

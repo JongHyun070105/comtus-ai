@@ -101,17 +101,25 @@ class _SwiftCaptureAdapter:
             window_id=int(item["window_id"]), process_name=item.get("process_name"), title=item.get("title"),
             width_points=float(item["width_points"]), height_points=float(item["height_points"]),
             on_screen=bool(item.get("on_screen", True)),
+            process_id=int(item["process_id"]) if item.get("process_id") is not None else None,
+            bundle_id=item.get("bundle_identifier", item.get("bundle_id")),
         ) for item in response.get("windows", [])]
 
-    def capture_window(self, window_id: int) -> CapturedFrame:
+    def capture_window(self, window_id: int, process_id: int, bundle_id: str | None = None) -> CapturedFrame:
         with tempfile.TemporaryDirectory(prefix="capture-", dir=self.temporary_root) as temporary:
             output = Path(temporary) / "frame.png"
-            response = self._run_json(["capture", "--window-id", str(window_id), "--output", str(output),
-                                       "--visual-signature"])
+            arguments = ["capture", "--window-id", str(window_id), "--expected-process-id", str(process_id),
+                         "--output", str(output), "--visual-signature"]
+            if bundle_id:
+                arguments += ["--expected-bundle-id", bundle_id]
+            response = self._run_json(arguments)
             encoded_signature = response.get("visual_signature")
             visual_signature = base64.b64decode(encoded_signature, validate=True) if encoded_signature else None
+            encoded_key_region = response.get("key_region_signature")
+            key_region_signature = base64.b64decode(encoded_key_region, validate=True) if encoded_key_region else None
             return CapturedFrame(output.read_bytes(), int(response["width_pixels"]),
-                                 int(response["height_pixels"]), str(response["captured_at"]), visual_signature)
+                                 int(response["height_pixels"]), str(response["captured_at"]),
+                                 visual_signature, key_region_signature)
 
     def run_ocr(self, image_bytes: bytes) -> dict[str, Any]:
         with tempfile.TemporaryDirectory(prefix="ocr-", dir=self.temporary_root) as temporary:

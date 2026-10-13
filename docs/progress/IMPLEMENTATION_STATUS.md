@@ -2,7 +2,18 @@
 
 Updated: 2026-10-13
 
-## v0.2.1 actual-image verification pipeline — 2026-10-13
+## v0.2.2 current checkpoint — 2026-10-13
+
+- Capture discovery now requires process name exactly `V26`, the verified macOS bundle ID when present, and a live positive PID. Window title is independent metadata; terminal titles cannot qualify. Multiple game windows fail closed. PID/window ID/bundle ID are rechecked immediately before ScreenCaptureKit capture; a missing window is rediscovered on the next poll.
+- Capture dedup now keeps exact image SHA, separate whole-frame stability and fixed content-region signatures, screen state, high-confidence OCR text at normalized coordinates, and parsed player/page candidates distinct. Similarity alone does not suppress a field-text or major-region change. Sustained small animation is covered by synthetic regression tests.
+- `save_verified_player_snapshot` supports confirmed partial fields while requiring matching card master/owned instance, one player across at least two verified pitcher-detail pages, preserved SHA-matched PNGs, verified OCR observations inside the active panel, and no unresolved contradictions. The generic writer rejects `SCREEN_CAPTURE_VERIFIED`; unreviewed capture candidates cannot reach a verified snapshot. The schema remains v4.
+- Current local database: 20 captures, 1,835 OCR observations, 20 screen observations, 144 field candidates (8 `CANDIDATE`, 136 `LOW_CONFIDENCE`), 16 preserved private PNGs, 2 OCR correction rows, and 0 card masters/instances/player snapshots. `PRAGMA integrity_check` is `ok`; foreign-key violations: 0. Historical candidate rows were not edited.
+- The game window was identified as process `V26`, bundle `com.com2us.futurecpb.ios.apple.global.normal`, PID 81562, window ID 82657, 810×1112 points; a larger terminal was excluded. Latest read-only run: 4 polls/frames, 1 OCR frame, 2 duplicate frames, no ambiguity/failures; capture p50/p95 379.4/396.6 ms, OCR p50/p95 770.7 ms, process+child CPU 61.4%, 8 missed polls. These are host capture/OCR metrics, not game-rendered FPS.
+- Visual review confirms the current screen is `PITCHER_ORDER:CANDIDATE` at confidence 0.5, not a player-detail page. `후라도'26`, LIVE V2, five stars, and +5 remain candidates from this one overview. `100*` remains unconfirmed and is not OVR. Stats, skills, potential, and pitches are unknown; actual verified field count and player snapshot count remain zero.
+- Python regression suite passes 81/81. SwiftPM/XCTest remains `BLOCKED` by `sandbox-exec: sandbox_apply: Operation not permitted`; the XCTest target did not run. The capture CLI's built-in source-matched compiler fallback was used for actual read-only capture only and does not count as XCTest evidence.
+- No game input was sent. To complete real snapshot verification, the user must open the pitcher-detail pages; automatic UI input remains disabled.
+
+## Historical — v0.2.1 actual-image verification pipeline — 2026-10-13
 
 - Implemented KBO-window two-digit year resolution. The six requested card labels resolve to 1983, 1992, 1998, 2000, 2007, and 2026. Unknown/ambiguous years preserve the raw token and candidate years as `UNRESOLVED`; current season is never substituted.
 - Navigation visits now key on screen state, player identity, detail page, and navigation goal. Collection deduplication is tracked separately. Mock tests cover batters 1–9, pitcher-to-batter switching, page return, same-player revisit, retry/depth limits, unexpected state/player, pause, and emergency stop.

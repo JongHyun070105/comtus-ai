@@ -176,9 +176,21 @@ public struct WindowDescriptor: Codable, Equatable, Sendable {
     public let title: String?
     public let processName: String?
     public let processID: Int32?
+    public let bundleIdentifier: String?
     public let widthPoints: Double
     public let heightPoints: Double
     public let onScreen: Bool
+}
+
+public enum CaptureWindowIdentity {
+    public static func matches(windowID: UInt32, processID: Int32?, bundleIdentifier: String?,
+                               expectedWindowID: UInt32, expectedProcessID: Int32?,
+                               expectedBundleIdentifier: String?) -> Bool {
+        guard windowID == expectedWindowID else { return false }
+        if let expectedProcessID, processID != expectedProcessID { return false }
+        if let expectedBundleIdentifier, bundleIdentifier != expectedBundleIdentifier { return false }
+        return true
+    }
 }
 
 public struct ObjectObservation: Codable, Equatable, Sendable {
@@ -192,6 +204,7 @@ public struct ObjectObservation: Codable, Equatable, Sendable {
 public enum CaptureFailure: Error, LocalizedError, Equatable {
     case screenRecordingPermissionDenied
     case gameWindowNotFound(UInt32)
+    case windowIdentityChanged(UInt32)
     case imageLoadFailed(String)
     case imageSaveFailed(String)
     case invalidRegion
@@ -203,6 +216,7 @@ public enum CaptureFailure: Error, LocalizedError, Equatable {
         switch self {
         case .screenRecordingPermissionDenied: "Screen Recording permission is not granted. Enable it in System Settings > Privacy & Security > Screen & System Audio Recording, then restart this command."
         case .gameWindowNotFound(let id): "No on-screen window with ID \(id) was found."
+        case .windowIdentityChanged(let id): "Window ID \(id) no longer belongs to the process selected during discovery."
         case .imageLoadFailed(let path): "Unable to load image at \(path)."
         case .imageSaveFailed(let path): "Unable to write image at \(path)."
         case .invalidRegion: "ROI must be a non-empty normalized rectangle inside the frame."
@@ -216,6 +230,7 @@ public enum CaptureFailure: Error, LocalizedError, Equatable {
         switch self {
         case .screenRecordingPermissionDenied: "SCREEN_RECORDING_PERMISSION_DENIED"
         case .gameWindowNotFound: "WINDOW_NOT_FOUND"
+        case .windowIdentityChanged: "WINDOW_IDENTITY_CHANGED"
         case .imageLoadFailed: "IMAGE_LOAD_FAILED"
         case .imageSaveFailed: "IMAGE_SAVE_FAILED"
         case .invalidRegion: "INVALID_ROI"

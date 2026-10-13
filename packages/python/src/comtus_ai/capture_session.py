@@ -27,6 +27,9 @@ from .screens import (
 )
 
 
+V26_BUNDLE_IDENTIFIER = "com.com2us.futurecpb.ios.apple.global.normal"
+
+
 @dataclass(frozen=True, slots=True)
 class CaptureWindow:
     window_id: int
@@ -35,11 +38,14 @@ class CaptureWindow:
     width_points: float
     height_points: float
     on_screen: bool = True
+    process_id: int | None = None
+    bundle_id: str | None = None
 
     @property
     def is_v26(self) -> bool:
-        identity = f"{self.process_name or ''} {self.title or ''}".casefold()
-        return self.on_screen and "v26" in identity
+        process_matches = self.process_name == "V26"
+        bundle_matches = self.bundle_id in (None, "", V26_BUNDLE_IDENTIFIER)
+        return self.on_screen and self.process_id is not None and self.process_id > 0 and process_matches and bundle_matches
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,11 +55,12 @@ class CapturedFrame:
     height_pixels: int
     captured_at: str | None = None
     visual_signature: bytes | None = None
+    key_region_signature: bytes | None = None
 
 
 class CaptureAdapter(Protocol):
     def list_windows(self) -> Sequence[CaptureWindow]: ...
-    def capture_window(self, window_id: int) -> CapturedFrame: ...
+    def capture_window(self, window_id: int, process_id: int, bundle_id: str | None = None) -> CapturedFrame: ...
     def run_ocr(self, image_bytes: bytes) -> Mapping[str, Any]: ...
 
 
@@ -85,6 +92,8 @@ class CaptureSessionReport:
     polls: int
     v26_windows_seen: int
     no_window_polls: int
+    ambiguous_window_polls: int
+    window_identity_changes: int
     captured_frames: int
     stable_frames: int
     ocr_frames: int
@@ -107,6 +116,8 @@ class _MutableMetrics:
     polls: int = 0
     v26_windows_seen: int = 0
     no_window_polls: int = 0
+    ambiguous_window_polls: int = 0
+    window_identity_changes: int = 0
     captured_frames: int = 0
     stable_frames: int = 0
     ocr_frames: int = 0
@@ -131,10 +142,13 @@ class ReadOnlyCaptureSession:
         self._candidate_digest: str | None = None
         self._candidate_anchor_frame: CapturedFrame | None = None
         self._candidate_frame: CapturedFrame | None = None
-        self._candidate_window_id: int | None = None
-        self._last_attempted_frame: CapturedFrame | None = None
+        self._candidate_window_identity: tuple[int, int] | None = None
+        self._last_semantic_digest: str | None = None
+        self._last_key_region_signature: bytes | None = None
+        self._last_signature_is_exact: bool | None = None
+        self._last_ocr_text_by_position: dict[tuple[float, float], tuple[str, ...]] | None = None
         self._stable_count = 0
-        self._active_window_id: int | None = None
+        self._active_window_identity: tuple[int, int] | None = None
         self._capture_start_cpu = 0.0
         self._capture_start_wall = 0.0
 
@@ -160,7 +174,7 @@ class ReadOnlyCaptureSession:
             status = "EXEC_PASS"
         elif self.metrics.failed_frames:
             status = "EXEC_FAIL"
-        elif self.metrics.no_window_polls:
+        elif self.metrics.no_window_polls or self.metrics.ambiguous_window_polls:
             status = "BLOCKED"
         else:
             status = "SKIP"
@@ -171,7 +185,10 @@ class ReadOnlyCaptureSession:
         cpu_elapsed = max(time.process_time() - cpu_start + child_cpu, 0.0)
         return CaptureSessionReport(
             status=status, polls=self.metrics.polls, v26_windows_seen=self.metrics.v26_windows_seen,
-            no_window_polls=self.metrics.no_window_polls, captured_frames=self.metrics.captured_frames,
+            no_window_polls=self.metrics.no_window_polls,
+            ambiguous_window_polls=self.metrics.ambiguous_window_polls,
+            window_identity_changes=self.metrics.window_identity_changes,
+            captured_frames=self.metrics.captured_frames,
             stable_frames=self.metrics.stable_frames, ocr_frames=self.metrics.ocr_frames,
             duplicate_frames=self.metrics.duplicate_frames, failed_frames=self.metrics.failed_frames,
             missed_frames=self.metrics.missed_frames, screen_profile_mismatches=self.metrics.screen_profile_mismatches,
@@ -193,17 +210,26 @@ class ReadOnlyCaptureSession:
             return
         if not candidates:
             self.metrics.no_window_polls += 1
-            self._active_window_id = None
+            self._active_window_identity = None
             self._reset_candidate()
             return
-        window = max(candidates, key=lambda item: (item.width_points * item.height_points, item.window_id))
-        self.metrics.v26_windows_seen += 1
-        if self._active_window_id != window.window_id:
+        self.metrics.v26_windows_seen += len(candidates)
+        if len(candidates) != 1:
+            self.metrics.ambiguous_window_polls += 1
+            self._active_window_identity = None
             self._reset_candidate()
-            self._active_window_id = window.window_id
+            return
+        window = candidates[0]
+        window_identity = (window.process_id, window.window_id)
+        if self._active_window_identity != window_identity:
+            if self._active_window_identity is not None:
+                self.metrics.window_identity_changes += 1
+            self._reset_candidate()
+            self._active_window_identity = window_identity
         started = time.monotonic()
         try:
-            frame = self.adapter.capture_window(window.window_id)
+            assert window.process_id is not None
+            frame = self.adapter.capture_window(window.window_id, window.process_id, window.bundle_id)
         except Exception:
             self.metrics.failed_frames += 1
             self._reset_candidate()
@@ -213,7 +239,7 @@ class ReadOnlyCaptureSession:
         digest = hashlib.sha256(frame.image_bytes).hexdigest()
         same_candidate = (
             self._candidate_anchor_frame is not None
-            and window.window_id == self._candidate_window_id
+            and window_identity == self._candidate_window_identity
             and self._frames_similar(self._candidate_anchor_frame, frame)
         )
         if same_candidate:
@@ -224,30 +250,83 @@ class ReadOnlyCaptureSession:
             self._candidate_digest = digest
             self._candidate_anchor_frame = frame
             self._candidate_frame = frame
-            self._candidate_window_id = window.window_id
+            self._candidate_window_identity = window_identity
             self._stable_count = 1
         if self._stable_count < self.config.stable_samples:
             return
         if self.store.capture_frame_is_processed(sha256=digest, profile_version=SCREEN_PROFILE_VERSION):
-            self.metrics.duplicate_frames += 1
-            self._last_attempted_frame = frame
-            return
-        if (self._last_attempted_frame is not None
-                and self._frames_similar(self._last_attempted_frame, frame)):
             self.metrics.duplicate_frames += 1
             return
         self.metrics.stable_frames += 1
         ocr_started = time.monotonic()
         try:
             document = dict(self.adapter.run_ocr(frame.image_bytes))
+            semantic_digest, key_region_signature, signature_is_exact, text_by_position = \
+                self._semantic_capture_digest(frame, document)
+            if (semantic_digest == self._last_semantic_digest
+                    and self._ocr_text_is_compatible(self._last_ocr_text_by_position, text_by_position)
+                    and self._signatures_similar(
+                        self._last_key_region_signature, key_region_signature,
+                        exact_only=bool(self._last_signature_is_exact or signature_is_exact),
+                    )):
+                self.metrics.duplicate_frames += 1
+                return
             self._persist(frame, document)
         except Exception:
             self.metrics.failed_frames += 1
-            self._last_attempted_frame = frame
             return
-        self._last_attempted_frame = frame
+        self._last_semantic_digest = semantic_digest
+        self._last_key_region_signature = key_region_signature
+        self._last_signature_is_exact = signature_is_exact
+        self._last_ocr_text_by_position = text_by_position
         self.metrics.ocr_durations_ms.append((time.monotonic() - ocr_started) * 1000)
         self.metrics.ocr_frames += 1
+
+    def _semantic_capture_digest(
+        self, frame: CapturedFrame, document: dict[str, Any],
+    ) -> tuple[str, bytes, bool, dict[tuple[float, float], tuple[str, ...]]]:
+        observations = load_ocr_document(json.dumps(document, ensure_ascii=False))
+        classification = recognize_screen(observations)
+        if not classifier_payload_matches(document, classification):
+            classification = ScreenClassification(ScreenState.UNKNOWN, ClassificationStatus.UNKNOWN, None,
+                                                  profile_version=SCREEN_PROFILE_VERSION)
+        panel_values = document.get("active_panel")
+        active_panel = NormalizedRect(*panel_values) if panel_values else None
+        candidates = parse_ocr_fields(observations, active_panel=active_panel)
+        player_identity = sorted({str(item.value) for item in candidates
+                                  if item.field_key == "player_name" and item.value is not None})
+        page_identity = sorted({item.page for item in candidates if item.page is not None})
+        signature = frame.key_region_signature or frame.visual_signature
+        exact_only = signature is None
+        if signature is None:
+            signature = hashlib.sha256(frame.image_bytes).digest()
+        position_values: dict[tuple[float, float], set[str]] = {}
+        for item in observations:
+            if item.confidence is not None and item.confidence >= 0.85:
+                position = (round(item.bbox[0] + item.bbox[2] / 2, 2),
+                            round(item.bbox[1] + item.bbox[3] / 2, 2))
+                position_values.setdefault(position, set()).add(item.text)
+        text_by_position = {position: tuple(sorted(values)) for position, values in position_values.items()}
+        payload = {
+            "active_panel": panel_values,
+            "screen_state": classification.state.value,
+            "screen_status": classification.status.value,
+            "player_identity_candidates": player_identity,
+            "page_identity_candidates": page_identity,
+        }
+        digest = hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True,
+                                           separators=(",", ":")).encode("utf-8")).hexdigest()
+        return digest, signature, exact_only, text_by_position
+
+    @staticmethod
+    def _ocr_text_is_compatible(
+        previous: dict[tuple[float, float], tuple[str, ...]] | None,
+        current: dict[tuple[float, float], tuple[str, ...]],
+    ) -> bool:
+        if previous is None:
+            return False
+        shared_positions = previous.keys() & current.keys()
+        return all(previous[position] == current[position] for position in shared_positions)
 
     def _persist(self, frame: CapturedFrame, document: dict[str, Any]) -> None:
         observations = load_ocr_document(json.dumps(document, ensure_ascii=False))
@@ -330,18 +409,25 @@ class ReadOnlyCaptureSession:
         self._candidate_digest = None
         self._candidate_anchor_frame = None
         self._candidate_frame = None
-        self._candidate_window_id = None
+        self._candidate_window_identity = None
         self._stable_count = 0
 
     def _frames_similar(self, left: CapturedFrame, right: CapturedFrame) -> bool:
         left_signature, right_signature = left.visual_signature, right.visual_signature
-        if left_signature is None or right_signature is None or len(left_signature) != len(right_signature):
+        if left_signature is None or right_signature is None:
             return hashlib.sha256(left.image_bytes).digest() == hashlib.sha256(right.image_bytes).digest()
+        return self._signatures_similar(left_signature, right_signature, exact_only=False)
+
+    def _signatures_similar(self, left: bytes | None, right: bytes | None, *, exact_only: bool) -> bool:
+        if left is None or right is None or len(left) != len(right):
+            return False
+        if exact_only:
+            return left == right
         changed_samples = sum(
             abs(left_sample - right_sample) > self.config.max_visual_sample_delta
-            for left_sample, right_sample in zip(left_signature, right_signature, strict=True)
+            for left_sample, right_sample in zip(left, right, strict=True)
         )
-        return changed_samples / len(left_signature) <= self.config.max_visual_change_ratio
+        return changed_samples / len(left) <= self.config.max_visual_change_ratio
 
     @staticmethod
     def _percentile(values: list[float], percentile: float) -> float | None:

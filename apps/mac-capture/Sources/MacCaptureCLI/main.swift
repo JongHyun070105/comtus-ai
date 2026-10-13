@@ -27,8 +27,12 @@ struct MacCaptureCLI {
                 try printJSON(WindowListResponse(status: windows.isEmpty ? "NO_WINDOWS" : "EXEC_PASS", windows: windows))
             case "capture":
                 let windowID = try uint32Option("--window-id", in: args)
+                let expectedProcessID = try int32Option("--expected-process-id", in: args)
+                let expectedBundleIdentifier = optionalStringOption("--expected-bundle-id", in: args)
                 let output = try stringOption("--output", in: args)
-                let image = try await ScreenCaptureFrameSource().capture(windowID: windowID)
+                let image = try await ScreenCaptureFrameSource().capture(
+                    windowID: windowID, expectedProcessID: expectedProcessID,
+                    expectedBundleIdentifier: expectedBundleIdentifier)
                 try ScreenCaptureFrameSource().savePNG(image, to: URL(fileURLWithPath: output))
                 let capturedAt = ISO8601DateFormatter().string(from: Date())
                 var response: [String: Any] = ["status": "EXEC_PASS", "window_id": windowID,
@@ -37,6 +41,7 @@ struct MacCaptureCLI {
                                                "source": "SCREEN_CAPTURE_VERIFIED"]
                 if args.contains("--visual-signature") {
                     response["visual_signature"] = FrameVisualSignature.make(image)?.base64EncodedString() ?? ""
+                    response["key_region_signature"] = FrameVisualSignature.makeKeyRegion(image)?.base64EncodedString() ?? ""
                 }
                 try printJSON(response)
             case "ocr":
@@ -82,8 +87,21 @@ struct MacCaptureCLI {
         return args[index + 1]
     }
 
+    private static func optionalStringOption(_ name: String, in args: [String]) -> String? {
+        guard let index = args.firstIndex(of: name), args.indices.contains(index + 1) else { return nil }
+        return args[index + 1]
+    }
+
     private static func uint32Option(_ name: String, in args: [String]) throws -> UInt32 {
         guard let value = UInt32(try stringOption(name, in: args)) else { throw CaptureFailure.invalidArguments("\(name) must be a positive integer.") }
+        return value
+    }
+
+    private static func int32Option(_ name: String, in args: [String]) throws -> Int32? {
+        guard args.contains(name) else { return nil }
+        guard let value = Int32(try stringOption(name, in: args)), value > 0 else {
+            throw CaptureFailure.invalidArguments("\(name) must be a positive integer.")
+        }
         return value
     }
 
